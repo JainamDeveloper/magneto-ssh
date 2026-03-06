@@ -1,0 +1,13 @@
+# Python remnants (old version — not used)
+magneto_ssh/
+pyproject.toml
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Claude session data
+.claude/
+
+# macOS
+.DS_Store
