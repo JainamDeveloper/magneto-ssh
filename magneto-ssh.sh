@@ -348,7 +348,11 @@ cmd_update() {
     # ── Auth credentials ──────────────────────────────────────────────────────
     local raw_pw="" ssh_key=""
     if [[ "${auth_type}" == "password" ]]; then
-        printf "  SSH password [Enter to keep current]: "; read -rs raw_pw; printf '\n'
+        local _upd_pw
+        printf "  Update SSH password? [y/N]: "; read -r _upd_pw
+        if [[ "${_upd_pw,,}" == "y" ]]; then
+            printf "  New SSH password: "; read -rs raw_pw; printf '\n'
+        fi
         ssh_key=""
     else
         printf "  Path to SSH key [%s]: " "${cur_ssh_key}"; read -r ssh_key
@@ -369,13 +373,17 @@ cmd_update() {
     admin_user="${admin_user:-${cur_admin_user}}"
 
     raw_admin_pw=""
-    printf "  Admin password [Enter to keep current]: "; read -rs raw_admin_pw; printf '\n'
+    local _upd_apw
+    printf "  Update Admin password? [y/N]: "; read -r _upd_apw
+    [[ "${_upd_apw,,}" == "y" ]] && { printf "  New Admin password: "; read -rs raw_admin_pw; printf '\n'; }
 
     printf "  Frontend URL [%s]: " "${cur_frontend_url}"; read -r frontend_url
     frontend_url="${frontend_url:-${cur_frontend_url}}"
 
     raw_git_token=""
-    printf "  Git token [Enter to keep current]: "; read -rs raw_git_token; printf '\n'
+    local _upd_gt
+    printf "  Update Git token? [y/N]: "; read -r _upd_gt
+    [[ "${_upd_gt,,}" == "y" ]] && { printf "  New Git token: "; read -rs raw_git_token; printf '\n'; }
 
     printf "\n${DIM}  Database — press Enter to keep current:${NC}\n"
     local db_host db_port db_name db_user raw_db_pw tunnel_local_port
@@ -388,7 +396,9 @@ cmd_update() {
     printf "  DB user [%s]: " "${cur_db_user}"; read -r db_user
     db_user="${db_user:-${cur_db_user}}"
     raw_db_pw=""
-    printf "  DB password [Enter to keep current]: "; read -rs raw_db_pw; printf '\n'
+    local _upd_dbpw
+    printf "  Update DB password? [y/N]: "; read -r _upd_dbpw
+    [[ "${_upd_dbpw,,}" == "y" ]] && { printf "  New DB password: "; read -rs raw_db_pw; printf '\n'; }
     printf "  Tunnel local port [%s]: " "${cur_tunnel_local_port:-13306}"; read -r tunnel_local_port
     tunnel_local_port="${tunnel_local_port:-${cur_tunnel_local_port:-13306}}"
 
