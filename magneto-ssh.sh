@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="1.2.6"
+VERSION="1.2.7"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 CONFIG_DIR="${HOME}/.magneto-ssh"
@@ -130,59 +130,76 @@ list_server_names() {
 
 # ── Pure-bash multi-select picker (arrow keys + space) ───────────────────────
 _PICKER_RESULT=""
+_PICKER_STTY=""
+
 _field_picker() {
     local labels=("$@")
     local count=${#labels[@]}
-    local cur=0 i box
+    local cur=0 i box changed
     local sel=()
     for (( i=0; i<count; i++ )); do sel[i]=0; done
 
-    local saved_stty; saved_stty=$(stty -g 2>/dev/null)
-    _fp_cleanup() { stty "${saved_stty}" 2>/dev/null; tput cnorm 2>/dev/null; }
-    trap '_fp_cleanup; exit 1' INT TERM
+    _PICKER_STTY=$(stty -g 2>/dev/null) || true
+    trap '[[ -n "${_PICKER_STTY}" ]] && stty "${_PICKER_STTY}" 2>/dev/null || true; tput cnorm 2>/dev/null || true; exit 130' INT TERM
 
-    tput civis 2>/dev/null
-    stty -echo raw 2>/dev/null
+    tput civis 2>/dev/null || true
+    stty -echo raw 2>/dev/null || true
 
-    printf "${DIM}  ↑↓ move  Space=select  Enter=confirm${NC}\r\n"
+    # Flush any buffered input (e.g. Enter from invoking command)
+    while IFS= read -r -s -t 0.05 -n1 _ 2>/dev/null; do :; done || true
 
-    _fp_draw() {
-        for (( i=0; i<count; i++ )); do
-            [[ ${sel[i]} -eq 1 ]] && box="[x]" || box="[ ]"
-            if [[ $i -eq $cur ]]; then
-                printf "\r  \033[7m${box} %s\033[0m\033[K\r\n" "${labels[$i]}"
-            else
-                printf "\r  ${box} %s\033[K\r\n" "${labels[$i]}"
-            fi
-        done
-        printf "\033[%dA" "$count"
-    }
-    _fp_draw
+    printf "${DIM}  \xe2\x86\x91\xe2\x86\x93 move  Space=select  Enter=confirm${NC}\r\n"
+
+    # Draw all rows then reposition cursor to top of list
+    for (( i=0; i<count; i++ )); do
+        [[ ${sel[i]} -eq 1 ]] && box="[x]" || box="[ ]"
+        [[ $i -eq $cur ]] \
+            && printf "  \033[7m${box} %s\033[0m\033[K\r\n" "${labels[$i]}" \
+            || printf "  ${box} %s\033[K\r\n" "${labels[$i]}"
+    done
+    printf "\033[%dA" "$count"
 
     local k1 k2 k3
     while true; do
-        IFS= read -r -s -n1 k1
+        k1="" k2="" k3=""
+        IFS= read -r -s -n1 k1 2>/dev/null || true
         if [[ "$k1" == $'\x1b' ]]; then
-            IFS= read -r -s -n1 -t 0.05 k2
+            IFS= read -r -s -n1 -t 0.05 k2 2>/dev/null || true
             if [[ "$k2" == '[' ]]; then
-                IFS= read -r -s -n1 -t 0.05 k3
-                case "$k3" in
-                    A) (( cur > 0 )) && (( cur-- )); _fp_draw ;;
-                    B) (( cur < count-1 )) && (( cur++ )); _fp_draw ;;
-                esac
+                IFS= read -r -s -n1 -t 0.05 k3 2>/dev/null || true
             fi
-        elif [[ "$k1" == ' ' ]]; then
-            sel[$cur]=$(( 1 - sel[$cur] )); _fp_draw
-        elif [[ "$k1" == $'\r' || "$k1" == '' ]]; then
-            break
-        elif [[ "$k1" == $'\x03' ]]; then
-            _fp_cleanup; trap - INT TERM
-            printf "\033[%dB\r\n" "$count"; exit 1
+        fi
+
+        changed=0
+        case "${k1}${k2}${k3}" in
+            $'\x1b[\x41') (( cur > 0 ))          && { (( cur-- )); changed=1; } ;;  # up
+            $'\x1b[\x42') (( cur < count - 1 ))   && { (( cur++ )); changed=1; } ;;  # down
+            ' '*)   sel[$cur]=$(( 1 - sel[$cur] )); changed=1 ;;
+            $'\r'*|'') break ;;
+            $'\x03'*) # Ctrl-C
+                [[ -n "${_PICKER_STTY}" ]] && stty "${_PICKER_STTY}" 2>/dev/null || true
+                tput cnorm 2>/dev/null || true
+                trap - INT TERM
+                printf "\033[%dB\r\n" "$count"
+                exit 130 ;;
+        esac
+
+        if [[ $changed -eq 1 ]]; then
+            for (( i=0; i<count; i++ )); do
+                [[ ${sel[i]} -eq 1 ]] && box="[x]" || box="[ ]"
+                [[ $i -eq $cur ]] \
+                    && printf "  \033[7m${box} %s\033[0m\033[K\r\n" "${labels[$i]}" \
+                    || printf "  ${box} %s\033[K\r\n" "${labels[$i]}"
+            done
+            printf "\033[%dA" "$count"
         fi
     done
 
-    printf "\033[%dB\r\033[K\n" "$count"
-    _fp_cleanup; trap - INT TERM
+    # Move cursor below list and restore terminal
+    printf "\033[%dB\r\n" "$count"
+    [[ -n "${_PICKER_STTY}" ]] && stty "${_PICKER_STTY}" 2>/dev/null || true
+    tput cnorm 2>/dev/null || true
+    trap - INT TERM
 
     _PICKER_RESULT=""
     for (( i=0; i<count; i++ )); do
@@ -463,7 +480,13 @@ cmd_update() {
 
     [[ -n "${chosen_labels}" ]] || { warn "No fields selected. Nothing changed."; return 0; }
 
-    _field_chosen() { [[ "${chosen_labels}" == *"$1"* ]]; }
+    _field_chosen() {
+        local line
+        while IFS= read -r line; do
+            [[ "${line}" == "$1"* ]] && return 0
+        done <<< "${chosen_labels}"
+        return 1
+    }
 
     # ── Prompt only selected fields ───────────────────────────────────────────
     local new_name="${name}"
