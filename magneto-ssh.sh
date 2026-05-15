@@ -114,6 +114,23 @@ list_server_names() {
     find "${SERVERS_DIR}" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort
 }
 
+# ── Interactive server picker ─────────────────────────────────────────────────
+pick_server() {
+    local prompt="${1:-Select server}"
+    local names
+    mapfile -t names < <(list_server_names)
+    [[ ${#names[@]} -gt 0 ]] || die "No servers configured. Run: magneto-ssh add <name>"
+    if command -v fzf &>/dev/null; then
+        printf "%s\n" "${names[@]}" | fzf --prompt="${prompt}: " --height=40% --reverse --no-info
+    else
+        printf "${BOLD}%s:${NC}\n" "${prompt}" >&2
+        select name in "${names[@]}"; do
+            [[ -n "${name}" ]] && { printf "%s" "${name}"; return 0; }
+            printf "Invalid selection.\n" >&2
+        done
+    fi
+}
+
 # ── TCP reachability (uses bash built-in /dev/tcp, no nc required) ────────────
 tcp_check() {
     local host="$1" port="$2" timeout="${3:-5}"
@@ -959,7 +976,7 @@ ${BOLD}Usage:${NC}
 ${BOLD}Commands:${NC}
   ${CYAN}init${NC}                     Set master password (run once)
   ${CYAN}add${NC}    <name>            Add a server interactively
-  ${CYAN}update${NC} <name>            Update an existing server config
+  ${CYAN}edit${NC}   <name>            Edit an existing server config
   ${CYAN}ssh${NC}    <name>            Connect to a server
   ${CYAN}list${NC}                     List all configured servers
   ${CYAN}info${NC}   <name>            Show server details (no passwords shown)
@@ -970,7 +987,7 @@ ${BOLD}Commands:${NC}
   ${CYAN}tunnel${NC}   <name>          Create SSH tunnel to remote DB (localhost:TUNNEL_LOCAL_PORT)
   ${CYAN}dbeaver${NC}  <name>          Open tunnel + launch DBeaver with DB connection
   ${CYAN}version${NC}                  Print version and check for updates
-  ${CYAN}upgrade${NC}                  Install latest version
+  ${CYAN}update${NC}                   Update magneto-ssh to latest version
 
 ${BOLD}Tab completion:${NC}
   magneto-ssh install-completion   Add bash tab completion to ~/.bashrc
@@ -999,7 +1016,7 @@ cmd_install_completion() {
 _magneto_ssh_complete() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local cmds="init add update ssh list info remove import validate filezilla tunnel dbeaver install-completion version upgrade help"
+    local cmds="init add edit ssh list info remove import validate filezilla tunnel dbeaver install-completion version update help"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=($(compgen -W "${cmds}" -- "${cur}"))
@@ -1080,7 +1097,7 @@ show_update_notice() {
     local newer
     newer=$(printf "%s\n%s\n" "${VERSION}" "${latest}" | sort -V | tail -1)
     [[ "${newer}" == "${latest}" && "${latest}" != "${VERSION}" ]] || return 0
-    printf "\n${YELLOW}Update available: v%s → v%s${NC}  Run: ${CYAN}magneto-ssh upgrade${NC}\n" \
+    printf "\n${YELLOW}Update available: v%s → v%s${NC}  Run: ${CYAN}magneto-ssh update${NC}\n" \
         "${VERSION}" "${latest}"
 }
 
@@ -1121,7 +1138,7 @@ cmd_version() {
     if [[ "${latest}" == "${VERSION}" ]]; then
         printf "${GREEN}You are on the latest version.${NC}\n"
     elif [[ "${newer}" == "${latest}" ]]; then
-        printf "${YELLOW}Update available: v%s → v%s${NC}  Run: ${CYAN}magneto-ssh upgrade${NC}\n" \
+        printf "${YELLOW}Update available: v%s → v%s${NC}  Run: ${CYAN}magneto-ssh update${NC}\n" \
             "${VERSION}" "${latest}"
     else
         printf "${GREEN}You are running a newer version than GitHub (v%s > v%s).${NC}\n" \
@@ -1140,7 +1157,7 @@ main() {
     case "${cmd}" in
         init)                   cmd_init ;;
         add)                    cmd_add "$@" ;;
-        update|edit)            cmd_update "$@" ;;
+        edit)                   cmd_update "$@" ;;
         ssh)                    cmd_ssh "$@" ;;
         list)                   cmd_list ;;
         info)                   cmd_info "$@" ;;
@@ -1151,14 +1168,14 @@ main() {
         dbeaver|db)             cmd_dbeaver "$@" ;;
         validate|check)         cmd_validate "$@" ;;
         version|--version|-v)   cmd_version ;;
-        upgrade|self-update)    cmd_upgrade ;;
+        upgrade|update|self-update) cmd_upgrade ;;
         install-completion)     cmd_install_completion ;;
         help|--help|-h)         cmd_help ;;
         *)                      err "Unknown command: ${cmd}"; cmd_help; exit 1 ;;
     esac
 
     case "${cmd}" in
-        version|upgrade|self-update|help|--help|-h|--version|-v) : ;;
+        version|upgrade|update|self-update|help|--help|-h|--version|-v) : ;;
         *) check_for_update > /dev/null 2>&1 & show_update_notice ;;
     esac
 }
