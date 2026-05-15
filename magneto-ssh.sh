@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="1.2.2"
+VERSION="1.2.3"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 CONFIG_DIR="${HOME}/.magneto-ssh"
@@ -603,18 +603,6 @@ cmd_validate() {
     fi
     [[ ${#servers[@]} -eq 0 ]] && { warn "No servers configured."; return; }
 
-    local needs_master=false
-    for name in "${servers[@]}"; do
-        local file; file=$(server_file "${name}")
-        local auth_type pw
-        auth_type=$(read_field "${file}" AUTH_TYPE)
-        pw=$(read_field "${file}" PASSWORD)
-        [[ "${auth_type}" == "password" && -n "${pw}" ]] && { needs_master=true; break; }
-    done
-
-    MASTER_PW=""
-    [[ "${needs_master}" == true ]] && prompt_master_password
-
     printf "\n${BOLD}Checking servers...${NC}\n\n"
 
     local pad=0
@@ -625,68 +613,18 @@ cmd_validate() {
 
     for name in "${servers[@]}"; do
         local file; file=$(server_file "${name}")
-        local host port user auth_type password_enc ssh_key
+        local host port
         host=$(read_field "${file}" HOST)
         port=$(read_field "${file}" PORT)
-        user=$(read_field "${file}" USER)
-        auth_type=$(read_field "${file}" AUTH_TYPE)
-        password_enc=$(read_field "${file}" PASSWORD)
-        ssh_key=$(read_field "${file}" SSH_KEY)
 
         local padded; padded=$(printf "%-${pad}s" "${name}")
 
-        if [[ "${auth_type}" == "password" ]]; then
-            if [[ -z "${password_enc}" || -z "${MASTER_PW}" ]]; then
-                if tcp_check "${host}" "${port}" "${timeout}"; then
-                    printf "  %s ${GREEN}✓${NC}  TCP reachable (no password to test)\n" "${padded}"
-                    (( ++ok_count ))
-                else
-                    printf "  %s ${RED}✗${NC}  unreachable\n" "${padded}"
-                    (( ++fail_count ))
-                fi
-                continue
-            fi
-
-            local password
-            password=$(decrypt_value "${password_enc}" "${MASTER_PW}") \
-                || { printf "  %s ${RED}✗${NC}  decryption failed\n" "${padded}"; (( ++fail_count )); continue; }
-
-            if ! command -v sshpass &>/dev/null; then
-                if tcp_check "${host}" "${port}" "${timeout}"; then
-                    printf "  %s ${YELLOW}!${NC}  TCP reachable (sshpass not installed)\n" "${padded}"
-                    (( ++ok_count ))
-                else
-                    printf "  %s ${RED}✗${NC}  unreachable\n" "${padded}"
-                    (( ++fail_count ))
-                fi
-                continue
-            fi
-
-            if sshpass -p "${password}" ssh \
-                    -p "${port}" \
-                    -o StrictHostKeyChecking=accept-new \
-                    -o ConnectTimeout="${timeout}" \
-                    -o BatchMode=no \
-                    "${user}@${host}" "exit" &>/dev/null 2>&1; then
-                printf "  %s ${GREEN}✓${NC}  connected\n" "${padded}"
-                (( ++ok_count ))
-            else
-                printf "  %s ${RED}✗${NC}  connection failed\n" "${padded}"
-                (( ++fail_count ))
-            fi
+        if tcp_check "${host}" "${port}" "${timeout}"; then
+            printf "  %s ${GREEN}✓${NC}  reachable\n" "${padded}"
+            (( ++ok_count ))
         else
-            local expanded_key="${ssh_key/#\~/${HOME}}"
-            if ssh -i "${expanded_key}" -p "${port}" \
-                    -o StrictHostKeyChecking=accept-new \
-                    -o ConnectTimeout="${timeout}" \
-                    -o BatchMode=yes \
-                    "${user}@${host}" "exit" &>/dev/null 2>&1; then
-                printf "  %s ${GREEN}✓${NC}  connected\n" "${padded}"
-                (( ++ok_count ))
-            else
-                printf "  %s ${RED}✗${NC}  connection failed\n" "${padded}"
-                (( ++fail_count ))
-            fi
+            printf "  %s ${RED}✗${NC}  unreachable\n" "${padded}"
+            (( ++fail_count ))
         fi
     done
 
