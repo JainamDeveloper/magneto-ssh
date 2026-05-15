@@ -14,6 +14,7 @@ CONFIG_DIR="${HOME}/.magneto-ssh"
 SERVERS_DIR="${CONFIG_DIR}/servers"
 KEYS_DIR="${CONFIG_DIR}/keys"
 VERIFY_FILE="${CONFIG_DIR}/.verify"
+UPDATE_CACHE="${CONFIG_DIR}/.update_cache"
 
 # ── ANSI colors ───────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -960,7 +961,8 @@ ${BOLD}Commands:${NC}
   ${CYAN}filezilla${NC} <name>         Open server in FileZilla (SFTP)
   ${CYAN}tunnel${NC}   <name>          Create SSH tunnel to remote DB (localhost:TUNNEL_LOCAL_PORT)
   ${CYAN}dbeaver${NC}  <name>          Open tunnel + launch DBeaver with DB connection
-  ${CYAN}version${NC}                  Print version
+  ${CYAN}version${NC}                  Print version and check for updates
+  ${CYAN}upgrade${NC}                  Install latest version
 
 ${BOLD}Tab completion:${NC}
   magneto-ssh install-completion   Add bash tab completion to ~/.bashrc
@@ -989,7 +991,7 @@ cmd_install_completion() {
 _magneto_ssh_complete() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local cmds="init add update ssh list info remove import validate filezilla tunnel dbeaver install-completion version help"
+    local cmds="init add update ssh list info remove import validate filezilla tunnel dbeaver install-completion version upgrade help"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=($(compgen -W "${cmds}" -- "${cur}"))
@@ -1024,6 +1026,93 @@ COMPLETION
 }
 
 # =============================================================================
+# Version / update check
+# =============================================================================
+
+_fetch_latest_version() {
+    local fetch_cmd=""
+    if command -v curl &>/dev/null; then
+        fetch_cmd="curl -fsSL --max-time 5"
+    elif command -v wget &>/dev/null; then
+        fetch_cmd="wget -qO- --timeout=5"
+    else
+        return 1
+    fi
+    ${fetch_cmd} "https://raw.githubusercontent.com/JainamDeveloper/magneto-ssh/main/magneto-ssh.sh" 2>/dev/null \
+        | grep '^VERSION=' | head -1 | cut -d'"' -f2
+}
+
+check_for_update() {
+    # Refresh cache at most once per day
+    local now
+    now=$(date +%s)
+    local last_check=0
+    local cached_version=""
+    if [[ -f "${UPDATE_CACHE}" ]]; then
+        last_check=$(grep '^checked=' "${UPDATE_CACHE}" 2>/dev/null | cut -d= -f2 || echo 0)
+        cached_version=$(grep '^latest=' "${UPDATE_CACHE}" 2>/dev/null | cut -d= -f2 || echo "")
+    fi
+    if (( now - last_check > 86400 )); then
+        local fetched
+        fetched=$(_fetch_latest_version 2>/dev/null) || fetched=""
+        if [[ -n "${fetched}" ]]; then
+            printf "checked=%s\nlatest=%s\n" "${now}" "${fetched}" > "${UPDATE_CACHE}" 2>/dev/null || true
+            cached_version="${fetched}"
+        fi
+    fi
+    printf "%s" "${cached_version}"
+}
+
+show_update_notice() {
+    [[ -f "${UPDATE_CACHE}" ]] || return 0
+    local latest
+    latest=$(grep '^latest=' "${UPDATE_CACHE}" 2>/dev/null | cut -d= -f2 || echo "") || true
+    [[ -n "${latest}" && "${latest}" != "${VERSION}" ]] || return 0
+    printf "\n${YELLOW}Update available: v%s → v%s${NC}  Run: ${CYAN}magneto-ssh upgrade${NC}\n" \
+        "${VERSION}" "${latest}"
+}
+
+cmd_upgrade() {
+    local latest
+    latest=$(check_for_update)
+    if [[ -n "${latest}" && "${latest}" == "${VERSION}" ]]; then
+        ok "Already on latest version (v${VERSION})."
+        return 0
+    fi
+    printf "Upgrading magneto-ssh"
+    [[ -n "${latest}" ]] && printf " v%s → v%s" "${VERSION}" "${latest}"
+    printf "...\n"
+    local install_url="https://raw.githubusercontent.com/JainamDeveloper/magneto-ssh/main/install.sh"
+    if command -v curl &>/dev/null; then
+        curl -fsSL --max-time 30 "${install_url}" | bash
+    elif command -v wget &>/dev/null; then
+        wget -qO- --timeout=30 "${install_url}" | bash
+    else
+        die "curl or wget required to upgrade."
+    fi
+    # Bust cache so next run reflects new version
+    rm -f "${UPDATE_CACHE}" 2>/dev/null || true
+}
+
+cmd_version() {
+    printf "magneto-ssh v%s\n" "${VERSION}"
+    local latest
+    latest=$(_fetch_latest_version 2>/dev/null) || latest=""
+    if [[ -z "${latest}" ]]; then
+        printf "${DIM}(could not check for updates)${NC}\n"
+        return 0
+    fi
+    # Bust cache with fresh result
+    printf "checked=%s\nlatest=%s\n" "$(date +%s)" "${latest}" > "${UPDATE_CACHE}" 2>/dev/null || true
+    if [[ "${latest}" == "${VERSION}" ]]; then
+        printf "${GREEN}You are on the latest version.${NC}\n"
+    else
+        printf "${YELLOW}Update available: v%s → v%s${NC}  Run: ${CYAN}magneto-ssh upgrade${NC}\n" \
+            "${VERSION}" "${latest}"
+    fi
+}
+
+# =============================================================================
 # Main dispatcher
 # =============================================================================
 
@@ -1044,10 +1133,16 @@ main() {
         tunnel)                 cmd_tunnel "$@" ;;
         dbeaver|db)             cmd_dbeaver "$@" ;;
         validate|check)         cmd_validate "$@" ;;
-        version|--version|-v)   printf "magneto-ssh v%s\n" "${VERSION}" ;;
+        version|--version|-v)   cmd_version ;;
+        upgrade|self-update)    cmd_upgrade ;;
         install-completion)     cmd_install_completion ;;
         help|--help|-h)         cmd_help ;;
         *)                      err "Unknown command: ${cmd}"; cmd_help; exit 1 ;;
+    esac
+
+    case "${cmd}" in
+        version|upgrade|self-update|help|--help|-h|--version|-v) : ;;
+        *) check_for_update > /dev/null 2>&1 & show_update_notice ;;
     esac
 }
 
