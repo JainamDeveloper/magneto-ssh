@@ -1075,7 +1075,11 @@ show_update_notice() {
     [[ -f "${UPDATE_CACHE}" ]] || return 0
     local latest
     latest=$(grep '^latest=' "${UPDATE_CACHE}" 2>/dev/null | cut -d= -f2 || echo "") || true
-    [[ -n "${latest}" && "${latest}" != "${VERSION}" ]] || return 0
+    [[ -n "${latest}" ]] || return 0
+    # Only notify when remote is strictly newer than local
+    local newer
+    newer=$(printf "%s\n%s\n" "${VERSION}" "${latest}" | sort -V | tail -1)
+    [[ "${newer}" == "${latest}" && "${latest}" != "${VERSION}" ]] || return 0
     printf "\n${YELLOW}Update available: v%s → v%s${NC}  Run: ${CYAN}magneto-ssh upgrade${NC}\n" \
         "${VERSION}" "${latest}"
 }
@@ -1112,10 +1116,15 @@ cmd_version() {
     fi
     # Bust cache with fresh result
     printf "checked=%s\nlatest=%s\n" "$(date +%s)" "${latest}" > "${UPDATE_CACHE}" 2>/dev/null || true
+    local newer
+    newer=$(printf "%s\n%s\n" "${VERSION}" "${latest}" | sort -V | tail -1)
     if [[ "${latest}" == "${VERSION}" ]]; then
         printf "${GREEN}You are on the latest version.${NC}\n"
-    else
+    elif [[ "${newer}" == "${latest}" ]]; then
         printf "${YELLOW}Update available: v%s → v%s${NC}  Run: ${CYAN}magneto-ssh upgrade${NC}\n" \
+            "${VERSION}" "${latest}"
+    else
+        printf "${GREEN}You are running a newer version than GitHub (v%s > v%s).${NC}\n" \
             "${VERSION}" "${latest}"
     fi
 }
