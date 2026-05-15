@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="1.2.5"
+VERSION="1.2.6"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 CONFIG_DIR="${HOME}/.magneto-ssh"
@@ -126,6 +126,68 @@ write_server() {
 
 list_server_names() {
     find "${SERVERS_DIR}" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort
+}
+
+# ── Pure-bash multi-select picker (arrow keys + space) ───────────────────────
+_PICKER_RESULT=""
+_field_picker() {
+    local labels=("$@")
+    local count=${#labels[@]}
+    local cur=0 i box
+    local sel=()
+    for (( i=0; i<count; i++ )); do sel[i]=0; done
+
+    local saved_stty; saved_stty=$(stty -g 2>/dev/null)
+    _fp_cleanup() { stty "${saved_stty}" 2>/dev/null; tput cnorm 2>/dev/null; }
+    trap '_fp_cleanup; exit 1' INT TERM
+
+    tput civis 2>/dev/null
+    stty -echo raw 2>/dev/null
+
+    printf "${DIM}  ↑↓ move  Space=select  Enter=confirm${NC}\r\n"
+
+    _fp_draw() {
+        for (( i=0; i<count; i++ )); do
+            [[ ${sel[i]} -eq 1 ]] && box="[x]" || box="[ ]"
+            if [[ $i -eq $cur ]]; then
+                printf "\r  \033[7m${box} %s\033[0m\033[K\r\n" "${labels[$i]}"
+            else
+                printf "\r  ${box} %s\033[K\r\n" "${labels[$i]}"
+            fi
+        done
+        printf "\033[%dA" "$count"
+    }
+    _fp_draw
+
+    local k1 k2 k3
+    while true; do
+        IFS= read -r -s -n1 k1
+        if [[ "$k1" == $'\x1b' ]]; then
+            IFS= read -r -s -n1 -t 0.05 k2
+            if [[ "$k2" == '[' ]]; then
+                IFS= read -r -s -n1 -t 0.05 k3
+                case "$k3" in
+                    A) (( cur > 0 )) && (( cur-- )); _fp_draw ;;
+                    B) (( cur < count-1 )) && (( cur++ )); _fp_draw ;;
+                esac
+            fi
+        elif [[ "$k1" == ' ' ]]; then
+            sel[$cur]=$(( 1 - sel[$cur] )); _fp_draw
+        elif [[ "$k1" == $'\r' || "$k1" == '' ]]; then
+            break
+        elif [[ "$k1" == $'\x03' ]]; then
+            _fp_cleanup; trap - INT TERM
+            printf "\033[%dB\r\n" "$count"; exit 1
+        fi
+    done
+
+    printf "\033[%dB\r\033[K\n" "$count"
+    _fp_cleanup; trap - INT TERM
+
+    _PICKER_RESULT=""
+    for (( i=0; i<count; i++ )); do
+        [[ ${sel[i]} -eq 1 ]] && _PICKER_RESULT+="${labels[$i]}"$'\n'
+    done
 }
 
 # ── Interactive server picker ─────────────────────────────────────────────────
@@ -396,26 +458,8 @@ cmd_update() {
         "Tunnel Port     [${cur_tunnel_local_port}]"
     )
 
-    local chosen_labels=""
-    if command -v fzf &>/dev/null; then
-        printf "${DIM}  ↑↓ navigate  Tab=toggle  Enter=confirm${NC}\n\n"
-        chosen_labels=$(printf '%s\n' "${field_labels[@]}" \
-            | fzf --multi --prompt="Select fields to edit: " \
-                  --height=~100% --reverse --no-info \
-                  --bind 'tab:toggle+down') || true
-    else
-        printf "${DIM}  Enter numbers separated by spaces (e.g. 1 3 6):${NC}\n\n"
-        local i=1
-        for label in "${field_labels[@]}"; do
-            printf "  %2d) %s\n" "$i" "${label}"
-            (( i++ ))
-        done
-        printf "\n  Fields to edit: "; read -r choices
-        for n in ${choices}; do
-            [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#field_labels[@]} )) \
-                && chosen_labels+="${field_labels[$((n-1))]}"$'\n'
-        done
-    fi
+    _field_picker "${field_labels[@]}"
+    local chosen_labels="${_PICKER_RESULT}"
 
     [[ -n "${chosen_labels}" ]] || { warn "No fields selected. Nothing changed."; return 0; }
 
