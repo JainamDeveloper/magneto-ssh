@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="1.2.7"
+VERSION="1.2.8"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 CONFIG_DIR="${HOME}/.magneto-ssh"
@@ -126,85 +126,6 @@ write_server() {
 
 list_server_names() {
     find "${SERVERS_DIR}" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort
-}
-
-# ── Pure-bash multi-select picker (arrow keys + space) ───────────────────────
-_PICKER_RESULT=""
-_PICKER_STTY=""
-
-_field_picker() {
-    local labels=("$@")
-    local count=${#labels[@]}
-    local cur=0 i box changed
-    local sel=()
-    for (( i=0; i<count; i++ )); do sel[i]=0; done
-
-    _PICKER_STTY=$(stty -g 2>/dev/null) || true
-    trap '[[ -n "${_PICKER_STTY}" ]] && stty "${_PICKER_STTY}" 2>/dev/null || true; tput cnorm 2>/dev/null || true; exit 130' INT TERM
-
-    tput civis 2>/dev/null || true
-    stty -echo raw 2>/dev/null || true
-
-    # Flush any buffered input (e.g. Enter from invoking command)
-    while IFS= read -r -s -t 0.05 -n1 _ 2>/dev/null; do :; done || true
-
-    printf "${DIM}  \xe2\x86\x91\xe2\x86\x93 move  Space=select  Enter=confirm${NC}\r\n"
-
-    # Draw all rows then reposition cursor to top of list
-    for (( i=0; i<count; i++ )); do
-        [[ ${sel[i]} -eq 1 ]] && box="[x]" || box="[ ]"
-        [[ $i -eq $cur ]] \
-            && printf "  \033[7m${box} %s\033[0m\033[K\r\n" "${labels[$i]}" \
-            || printf "  ${box} %s\033[K\r\n" "${labels[$i]}"
-    done
-    printf "\033[%dA" "$count"
-
-    local k1 k2 k3
-    while true; do
-        k1="" k2="" k3=""
-        IFS= read -r -s -n1 k1 2>/dev/null || true
-        if [[ "$k1" == $'\x1b' ]]; then
-            IFS= read -r -s -n1 -t 0.05 k2 2>/dev/null || true
-            if [[ "$k2" == '[' ]]; then
-                IFS= read -r -s -n1 -t 0.05 k3 2>/dev/null || true
-            fi
-        fi
-
-        changed=0
-        case "${k1}${k2}${k3}" in
-            $'\x1b[\x41') (( cur > 0 ))          && { (( cur-- )); changed=1; } ;;  # up
-            $'\x1b[\x42') (( cur < count - 1 ))   && { (( cur++ )); changed=1; } ;;  # down
-            ' '*)   sel[$cur]=$(( 1 - sel[$cur] )); changed=1 ;;
-            $'\r'*|'') break ;;
-            $'\x03'*) # Ctrl-C
-                [[ -n "${_PICKER_STTY}" ]] && stty "${_PICKER_STTY}" 2>/dev/null || true
-                tput cnorm 2>/dev/null || true
-                trap - INT TERM
-                printf "\033[%dB\r\n" "$count"
-                exit 130 ;;
-        esac
-
-        if [[ $changed -eq 1 ]]; then
-            for (( i=0; i<count; i++ )); do
-                [[ ${sel[i]} -eq 1 ]] && box="[x]" || box="[ ]"
-                [[ $i -eq $cur ]] \
-                    && printf "  \033[7m${box} %s\033[0m\033[K\r\n" "${labels[$i]}" \
-                    || printf "  ${box} %s\033[K\r\n" "${labels[$i]}"
-            done
-            printf "\033[%dA" "$count"
-        fi
-    done
-
-    # Move cursor below list and restore terminal
-    printf "\033[%dB\r\n" "$count"
-    [[ -n "${_PICKER_STTY}" ]] && stty "${_PICKER_STTY}" 2>/dev/null || true
-    tput cnorm 2>/dev/null || true
-    trap - INT TERM
-
-    _PICKER_RESULT=""
-    for (( i=0; i<count; i++ )); do
-        [[ ${sel[i]} -eq 1 ]] && _PICKER_RESULT+="${labels[$i]}"$'\n'
-    done
 }
 
 # ── Interactive server picker ─────────────────────────────────────────────────
@@ -475,18 +396,30 @@ cmd_update() {
         "Tunnel Port     [${cur_tunnel_local_port}]"
     )
 
-    _field_picker "${field_labels[@]}"
-    local chosen_labels="${_PICKER_RESULT}"
+    local chosen_labels=""
+    if command -v fzf &>/dev/null; then
+        printf "${DIM}  ↑↓ navigate  Tab=toggle  Enter=confirm${NC}\n\n"
+        chosen_labels=$(printf '%s\n' "${field_labels[@]}" \
+            | fzf --multi --prompt="Select fields to edit: " \
+                  --height=~100% --reverse --no-info \
+                  --bind 'tab:toggle+down') || true
+    else
+        printf "${DIM}  Enter numbers separated by spaces (e.g. 1 3 6):${NC}\n\n"
+        local i=1
+        for label in "${field_labels[@]}"; do
+            printf "  %2d) %s\n" "$i" "${label}"
+            (( i++ ))
+        done
+        printf "\n  Fields to edit: "; read -r choices
+        for n in ${choices}; do
+            [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#field_labels[@]} )) \
+                && chosen_labels+="${field_labels[$((n-1))]}"$'\n'
+        done
+    fi
 
     [[ -n "${chosen_labels}" ]] || { warn "No fields selected. Nothing changed."; return 0; }
 
-    _field_chosen() {
-        local line
-        while IFS= read -r line; do
-            [[ "${line}" == "$1"* ]] && return 0
-        done <<< "${chosen_labels}"
-        return 1
-    }
+    _field_chosen() { [[ "${chosen_labels}" == *"$1"* ]]; }
 
     # ── Prompt only selected fields ───────────────────────────────────────────
     local new_name="${name}"
