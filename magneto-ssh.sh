@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="1.2.4"
+VERSION="1.2.5"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 CONFIG_DIR="${HOME}/.magneto-ssh"
@@ -341,15 +341,16 @@ EOF
 
 cmd_update() {
     local name="${1:-}"
-    [[ -n "${name}" ]] || die "Usage: magneto-ssh update <name>"
+    [[ -n "${name}" ]] || die "Usage: magneto-ssh edit <name>"
     server_exists "${name}" || die "Server '${name}' not found. Run: magneto-ssh list"
 
     local file; file=$(server_file "${name}")
 
-    # Load all existing values
-    local cur_host cur_port cur_user cur_auth_type cur_password_enc
-    local cur_ssh_key cur_project_dir cur_admin_url cur_admin_user
-    local cur_admin_password_enc cur_frontend_url cur_git_token_enc
+    # ── Load all current values ───────────────────────────────────────────────
+    local cur_host cur_port cur_user cur_auth_type cur_password_enc cur_ssh_key
+    local cur_project_dir cur_admin_url cur_admin_user cur_admin_password_enc
+    local cur_frontend_url cur_git_token_enc
+    local cur_db_host cur_db_port cur_db_name cur_db_user cur_db_password_enc cur_tunnel_local_port
 
     cur_host=$(read_field "${file}" HOST)
     cur_port=$(read_field "${file}" PORT)
@@ -363,7 +364,6 @@ cmd_update() {
     cur_admin_password_enc=$(read_field "${file}" ADMIN_PASSWORD)
     cur_frontend_url=$(read_field "${file}" FRONTEND_URL)
     cur_git_token_enc=$(read_field "${file}" GIT_TOKEN)
-    local cur_db_host cur_db_port cur_db_name cur_db_user cur_db_password_enc cur_tunnel_local_port
     cur_db_host=$(read_field "${file}" DB_HOST)
     cur_db_port=$(read_field "${file}" DB_PORT)
     cur_db_name=$(read_field "${file}" DB_NAME)
@@ -371,97 +371,149 @@ cmd_update() {
     cur_db_password_enc=$(read_field "${file}" DB_PASSWORD)
     cur_tunnel_local_port=$(read_field "${file}" TUNNEL_LOCAL_PORT)
 
-    printf "\n${BOLD}Updating server:${NC} ${CYAN}%s${NC}\n" "${name}"
-    printf "${DIM}Press Enter to keep the current value shown in [ ]${NC}\n\n"
+    # ── Field picker ─────────────────────────────────────────────────────────
+    printf "\n${BOLD}Edit server:${NC} ${CYAN}%s${NC}\n" "${name}"
 
-    # ── Rename ────────────────────────────────────────────────────────────────
-    local new_name
-    printf "  Server name [%s]: " "${name}"; read -r new_name
-    new_name="${new_name:-${name}}"
-    if [[ "${new_name}" != "${name}" ]] && server_exists "${new_name}"; then
-        printf "Server '%s' already exists. Overwrite? [y/N] " "${new_name}"
-        read -r confirm
-        [[ "${confirm,,}" == "y" ]] || exit 0
-    fi
+    local field_labels=(
+        "Name            [${name}]"
+        "Host            [${cur_host}]"
+        "Port            [${cur_port}]"
+        "SSH User        [${cur_user}]"
+        "Auth Type       [${cur_auth_type}]"
+        "SSH Password    $([ -n "${cur_password_enc}" ] && echo "[encrypted]" || echo "[not set]")"
+        "SSH Key         [${cur_ssh_key}]"
+        "Project Dir     [${cur_project_dir}]"
+        "Admin URL       [${cur_admin_url}]"
+        "Admin User      [${cur_admin_user}]"
+        "Admin Password  $([ -n "${cur_admin_password_enc}" ] && echo "[encrypted]" || echo "[not set]")"
+        "Frontend URL    [${cur_frontend_url}]"
+        "Git Token       $([ -n "${cur_git_token_enc}" ] && echo "[encrypted]" || echo "[not set]")"
+        "DB Host         [${cur_db_host}]"
+        "DB Port         [${cur_db_port}]"
+        "DB Name         [${cur_db_name}]"
+        "DB User         [${cur_db_user}]"
+        "DB Password     $([ -n "${cur_db_password_enc}" ] && echo "[encrypted]" || echo "[not set]")"
+        "Tunnel Port     [${cur_tunnel_local_port}]"
+    )
 
-    # ── Non-secret fields ─────────────────────────────────────────────────────
-    local host port user auth_type
-    printf "  Host [%s]: " "${cur_host}";  read -r host;  host="${host:-${cur_host}}"
-    [[ -n "${host}" ]] || die "Host is required."
-
-    printf "  Port [%s]: " "${cur_port}";  read -r port;  port="${port:-${cur_port}}"
-    [[ "${port}" =~ ^[0-9]+$ && "${port}" -ge 1 && "${port}" -le 65535 ]] \
-        || die "Invalid port: ${port}"
-
-    printf "  SSH user [%s]: " "${cur_user}"; read -r user; user="${user:-${cur_user}}"
-    [[ -n "${user}" ]] || die "User is required."
-
-    printf "  Auth type (current: %s):\n    1) password\n    2) ssh_key\n" "${cur_auth_type}"
-    printf "  Select [Enter to keep]: "; read -r auth_choice
-    case "${auth_choice}" in
-        1) auth_type="password" ;;
-        2) auth_type="ssh_key"  ;;
-        *) auth_type="${cur_auth_type}" ;;
-    esac
-
-    # ── Auth credentials ──────────────────────────────────────────────────────
-    local raw_pw="" ssh_key=""
-    if [[ "${auth_type}" == "password" ]]; then
-        local _upd_pw
-        printf "  Update SSH password? [y/N]: "; read -r _upd_pw
-        if [[ "${_upd_pw,,}" == "y" ]]; then
-            printf "  New SSH password: "; read -rs raw_pw; printf '\n'
-        fi
-        ssh_key=""
+    local chosen_labels=""
+    if command -v fzf &>/dev/null; then
+        printf "${DIM}  ↑↓ navigate  Tab=toggle  Enter=confirm${NC}\n\n"
+        chosen_labels=$(printf '%s\n' "${field_labels[@]}" \
+            | fzf --multi --prompt="Select fields to edit: " \
+                  --height=~100% --reverse --no-info \
+                  --bind 'tab:toggle+down') || true
     else
-        printf "  Path to SSH key [%s]: " "${cur_ssh_key}"; read -r ssh_key
-        ssh_key="${ssh_key:-${cur_ssh_key}}"
+        printf "${DIM}  Enter numbers separated by spaces (e.g. 1 3 6):${NC}\n\n"
+        local i=1
+        for label in "${field_labels[@]}"; do
+            printf "  %2d) %s\n" "$i" "${label}"
+            (( i++ ))
+        done
+        printf "\n  Fields to edit: "; read -r choices
+        for n in ${choices}; do
+            [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#field_labels[@]} )) \
+                && chosen_labels+="${field_labels[$((n-1))]}"$'\n'
+        done
     fi
 
-    # ── Optional metadata ─────────────────────────────────────────────────────
-    printf "\n${DIM}  Optional fields — press Enter to keep current value:${NC}\n"
+    [[ -n "${chosen_labels}" ]] || { warn "No fields selected. Nothing changed."; return 0; }
 
-    local project_dir admin_url admin_user raw_admin_pw frontend_url raw_git_token
-    printf "  Project directory [%s]: " "${cur_project_dir}"; read -r project_dir
-    project_dir="${project_dir:-${cur_project_dir}}"
+    _field_chosen() { [[ "${chosen_labels}" == *"$1"* ]]; }
 
-    printf "  Admin URL [%s]: " "${cur_admin_url}"; read -r admin_url
-    admin_url="${admin_url:-${cur_admin_url}}"
+    # ── Prompt only selected fields ───────────────────────────────────────────
+    local new_name="${name}"
+    if _field_chosen "Name"; then
+        printf "  Server name [%s]: " "${name}"; read -r new_name
+        new_name="${new_name:-${name}}"
+        if [[ "${new_name}" != "${name}" ]] && server_exists "${new_name}"; then
+            printf "Server '%s' already exists. Overwrite? [y/N] " "${new_name}"; read -r _ow
+            [[ "${_ow,,}" == "y" ]] || exit 0
+        fi
+    fi
 
-    printf "  Admin username [%s]: " "${cur_admin_user}"; read -r admin_user
-    admin_user="${admin_user:-${cur_admin_user}}"
+    local host="${cur_host}" port="${cur_port}" user="${cur_user}" auth_type="${cur_auth_type}"
+    if _field_chosen "Host"; then
+        printf "  Host [%s]: " "${cur_host}"; read -r host; host="${host:-${cur_host}}"
+        [[ -n "${host}" ]] || die "Host is required."
+    fi
+    if _field_chosen "Port"; then
+        printf "  Port [%s]: " "${cur_port}"; read -r port; port="${port:-${cur_port}}"
+        [[ "${port}" =~ ^[0-9]+$ && "${port}" -ge 1 && "${port}" -le 65535 ]] || die "Invalid port."
+    fi
+    if _field_chosen "SSH User"; then
+        printf "  SSH user [%s]: " "${cur_user}"; read -r user; user="${user:-${cur_user}}"
+        [[ -n "${user}" ]] || die "User is required."
+    fi
+    if _field_chosen "Auth Type"; then
+        printf "  Auth type (current: %s):\n    1) password\n    2) ssh_key\n  Select: " "${cur_auth_type}"
+        read -r _ac
+        case "${_ac}" in 1) auth_type="password";; 2) auth_type="ssh_key";; esac
+    fi
 
-    raw_admin_pw=""
-    local _upd_apw
-    printf "  Update Admin password? [y/N]: "; read -r _upd_apw
-    [[ "${_upd_apw,,}" == "y" ]] && { printf "  New Admin password: "; read -rs raw_admin_pw; printf '\n'; }
+    local raw_pw="" ssh_key="${cur_ssh_key}"
+    if _field_chosen "SSH Password" && [[ "${auth_type}" == "password" ]]; then
+        printf "  New SSH password: "; read -rs raw_pw; printf '\n'
+    fi
+    if _field_chosen "SSH Key" && [[ "${auth_type}" == "ssh_key" ]]; then
+        printf "  SSH key path [%s]: " "${cur_ssh_key}"; read -r ssh_key; ssh_key="${ssh_key:-${cur_ssh_key}}"
+    fi
 
-    printf "  Frontend URL [%s]: " "${cur_frontend_url}"; read -r frontend_url
-    frontend_url="${frontend_url:-${cur_frontend_url}}"
+    local project_dir="${cur_project_dir}" admin_url="${cur_admin_url}" admin_user="${cur_admin_user}"
+    local frontend_url="${cur_frontend_url}"
+    if _field_chosen "Project Dir"; then
+        printf "  Project dir [%s]: " "${cur_project_dir}"; read -r project_dir
+        project_dir="${project_dir:-${cur_project_dir}}"
+    fi
+    if _field_chosen "Admin URL"; then
+        printf "  Admin URL [%s]: " "${cur_admin_url}"; read -r admin_url
+        admin_url="${admin_url:-${cur_admin_url}}"
+    fi
+    if _field_chosen "Admin User"; then
+        printf "  Admin username [%s]: " "${cur_admin_user}"; read -r admin_user
+        admin_user="${admin_user:-${cur_admin_user}}"
+    fi
+    if _field_chosen "Frontend URL"; then
+        printf "  Frontend URL [%s]: " "${cur_frontend_url}"; read -r frontend_url
+        frontend_url="${frontend_url:-${cur_frontend_url}}"
+    fi
 
-    raw_git_token=""
-    local _upd_gt
-    printf "  Update Git token? [y/N]: "; read -r _upd_gt
-    [[ "${_upd_gt,,}" == "y" ]] && { printf "  New Git token: "; read -rs raw_git_token; printf '\n'; }
+    local raw_admin_pw="" raw_git_token=""
+    if _field_chosen "Admin Password"; then
+        printf "  New admin password: "; read -rs raw_admin_pw; printf '\n'
+    fi
+    if _field_chosen "Git Token"; then
+        printf "  New git token: "; read -rs raw_git_token; printf '\n'
+    fi
 
-    printf "\n${DIM}  Database — press Enter to keep current:${NC}\n"
-    local db_host db_port db_name db_user raw_db_pw tunnel_local_port
-    printf "  DB host [%s]: " "${cur_db_host:-127.0.0.1}"; read -r db_host
-    db_host="${db_host:-${cur_db_host:-127.0.0.1}}"
-    printf "  DB port [%s]: " "${cur_db_port:-3306}"; read -r db_port
-    db_port="${db_port:-${cur_db_port:-3306}}"
-    printf "  DB name [%s]: " "${cur_db_name}"; read -r db_name
-    db_name="${db_name:-${cur_db_name}}"
-    printf "  DB user [%s]: " "${cur_db_user}"; read -r db_user
-    db_user="${db_user:-${cur_db_user}}"
-    raw_db_pw=""
-    local _upd_dbpw
-    printf "  Update DB password? [y/N]: "; read -r _upd_dbpw
-    [[ "${_upd_dbpw,,}" == "y" ]] && { printf "  New DB password: "; read -rs raw_db_pw; printf '\n'; }
-    printf "  Tunnel local port [%s]: " "${cur_tunnel_local_port:-13306}"; read -r tunnel_local_port
-    tunnel_local_port="${tunnel_local_port:-${cur_tunnel_local_port:-13306}}"
+    local db_host="${cur_db_host:-127.0.0.1}" db_port="${cur_db_port:-3306}"
+    local db_name="${cur_db_name}" db_user="${cur_db_user}" raw_db_pw=""
+    local tunnel_local_port="${cur_tunnel_local_port:-13306}"
+    if _field_chosen "DB Host"; then
+        printf "  DB host [%s]: " "${cur_db_host:-127.0.0.1}"; read -r db_host
+        db_host="${db_host:-${cur_db_host:-127.0.0.1}}"
+    fi
+    if _field_chosen "DB Port"; then
+        printf "  DB port [%s]: " "${cur_db_port:-3306}"; read -r db_port
+        db_port="${db_port:-${cur_db_port:-3306}}"
+    fi
+    if _field_chosen "DB Name"; then
+        printf "  DB name [%s]: " "${cur_db_name}"; read -r db_name
+        db_name="${db_name:-${cur_db_name}}"
+    fi
+    if _field_chosen "DB User"; then
+        printf "  DB user [%s]: " "${cur_db_user}"; read -r db_user
+        db_user="${db_user:-${cur_db_user}}"
+    fi
+    if _field_chosen "DB Password"; then
+        printf "  New DB password: "; read -rs raw_db_pw; printf '\n'
+    fi
+    if _field_chosen "Tunnel Port"; then
+        printf "  Tunnel local port [%s]: " "${cur_tunnel_local_port:-13306}"; read -r tunnel_local_port
+        tunnel_local_port="${tunnel_local_port:-${cur_tunnel_local_port:-13306}}"
+    fi
 
-    # ── Only ask master password if a secret field is being changed ───────────
+    # ── Encrypt only changed secret fields ────────────────────────────────────
     local password_enc="${cur_password_enc}"
     local admin_password_enc="${cur_admin_password_enc}"
     local git_token_enc="${cur_git_token_enc}"
@@ -472,15 +524,13 @@ cmd_update() {
         && needs_encrypt=true
 
     if [[ "${needs_encrypt}" == true ]]; then
-        printf '\n'
-        prompt_master_password
+        printf '\n'; prompt_master_password
         [[ -n "${raw_pw}" ]]        && password_enc=$(encrypt_value "${raw_pw}" "${MASTER_PW}")
         [[ -n "${raw_admin_pw}" ]]  && admin_password_enc=$(encrypt_value "${raw_admin_pw}" "${MASTER_PW}")
         [[ -n "${raw_git_token}" ]] && git_token_enc=$(encrypt_value "${raw_git_token}" "${MASTER_PW}")
         [[ -n "${raw_db_pw}" ]]     && db_password_enc=$(encrypt_value "${raw_db_pw}" "${MASTER_PW}")
     fi
 
-    # If auth_type switched away from password, clear the stored password
     [[ "${auth_type}" == "ssh_key" ]] && password_enc=""
 
     # ── Save ──────────────────────────────────────────────────────────────────
