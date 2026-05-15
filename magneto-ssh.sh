@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="1.2.3"
+VERSION="1.2.4"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 CONFIG_DIR="${HOME}/.magneto-ssh"
@@ -15,6 +15,7 @@ SERVERS_DIR="${CONFIG_DIR}/servers"
 KEYS_DIR="${CONFIG_DIR}/keys"
 VERIFY_FILE="${CONFIG_DIR}/.verify"
 UPDATE_CACHE="${CONFIG_DIR}/.update_cache"
+RECOVERY_DIR="${CONFIG_DIR}/.recovery"
 
 # ── ANSI colors ───────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -37,8 +38,21 @@ die()  { err "$*"; exit 1; }
 
 # ── Directory setup ───────────────────────────────────────────────────────────
 ensure_dirs() {
-    mkdir -p "${SERVERS_DIR}" "${KEYS_DIR}"
-    chmod 700 "${CONFIG_DIR}" "${SERVERS_DIR}" "${KEYS_DIR}"
+    mkdir -p "${SERVERS_DIR}" "${KEYS_DIR}" "${RECOVERY_DIR}"
+    chmod 700 "${CONFIG_DIR}" "${SERVERS_DIR}" "${KEYS_DIR}" "${RECOVERY_DIR}"
+}
+
+generate_password() {
+    tr -dc 'A-Za-z0-9!@#$%^&*' < /dev/urandom 2>/dev/null | head -c 20
+}
+
+generate_recovery_code() {
+    local out="" i
+    for i in 1 2 3 4 5; do
+        out+=$(tr -dc 'A-Z0-9' < /dev/urandom 2>/dev/null | head -c 5)
+        [[ $i -lt 5 ]] && out+="-"
+    done
+    printf "%s" "${out}"
 }
 
 # ── Encryption helpers ────────────────────────────────────────────────────────
@@ -150,24 +164,69 @@ cmd_init() {
         [[ "${confirm,,}" == "y" ]] || exit 0
     fi
 
-    printf "\n${BOLD}magneto-ssh setup${NC}\n"
-    printf "${DIM}The master password encrypts SSH passwords and other secrets.\n"
-    printf "There is no recovery — do not forget it.\n\n${NC}"
+    printf "\n${BOLD}magneto-ssh setup${NC}\n\n"
 
-    local pw1 pw2
-    printf "  Master password: ";  read -rs pw1; printf '\n'
+    # Generate suggested master password
+    local suggested
+    suggested=$(generate_password)
+    printf "${DIM}  Suggested master password (press Enter to use, or type your own):${NC}\n"
+    printf "  ${BOLD}${suggested}${NC}\n\n"
+    printf "  Master password: "; read -rs pw1; printf '\n'
+    [[ -n "${pw1}" ]] || pw1="${suggested}"
+
     printf "  Confirm password: "; read -rs pw2; printf '\n'
-
-    [[ -n "${pw1}" ]]          || die "Password cannot be empty."
+    [[ -n "${pw2}" ]] || pw2="${pw1}"
     [[ "${pw1}" == "${pw2}" ]] || die "Passwords do not match."
 
+    # Write verify token
     local token
     token=$(encrypt_value "magneto-ssh-verified-v1" "${pw1}") \
         || die "openssl failed. Is openssl installed?"
     printf '%s\n' "${token}" > "${VERIFY_FILE}"
     chmod 600 "${VERIFY_FILE}"
 
-    printf '\n'; ok "Master password set. magneto-ssh is ready.\n"
+    # Generate 3 recovery codes and encrypt master password with each
+    local codes=() i enc
+    for i in 1 2 3; do
+        codes+=("$(generate_recovery_code)")
+        enc=$(encrypt_value "${pw1}" "${codes[$((i-1))]}") \
+            || die "Failed to generate recovery code ${i}."
+        printf '%s\n' "${enc}" > "${RECOVERY_DIR}/code${i}"
+        chmod 600 "${RECOVERY_DIR}/code${i}"
+    done
+
+    printf '\n'
+    ok "Master password set.\n"
+    printf "\n${BOLD}${YELLOW}⚠  Save these recovery codes somewhere safe.${NC}\n"
+    printf "${DIM}   Use any one of them with: magneto-ssh recover${NC}\n\n"
+    printf "  ${BOLD}Recovery code 1:${NC}  ${CYAN}%s${NC}\n" "${codes[0]}"
+    printf "  ${BOLD}Recovery code 2:${NC}  ${CYAN}%s${NC}\n" "${codes[1]}"
+    printf "  ${BOLD}Recovery code 3:${NC}  ${CYAN}%s${NC}\n\n" "${codes[2]}"
+    printf "${DIM}  Also save your master password: ${BOLD}%s${NC}\n\n" "${pw1}"
+}
+
+cmd_recover() {
+    ensure_dirs
+    require_init
+
+    printf "\n${BOLD}Master password recovery${NC}\n\n"
+    printf "  Enter a recovery code: "; read -r code
+    [[ -n "${code}" ]] || die "Recovery code cannot be empty."
+
+    local master="" i enc_file result
+    for i in 1 2 3; do
+        enc_file="${RECOVERY_DIR}/code${i}"
+        [[ -f "${enc_file}" ]] || continue
+        result=$(decrypt_value "$(cat "${enc_file}")" "${code}" 2>/dev/null) || continue
+        master="${result}"
+        break
+    done
+
+    [[ -n "${master}" ]] || die "Invalid recovery code."
+
+    printf '\n'
+    ok "Recovery successful.\n"
+    printf "\n  ${BOLD}Your master password is:${NC}  ${CYAN}%s${NC}\n\n" "${master}"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -922,7 +981,8 @@ ${BOLD}Usage:${NC}
   magneto-ssh <command> [arguments]
 
 ${BOLD}Commands:${NC}
-  ${CYAN}init${NC}                     Set master password (run once)
+  ${CYAN}init${NC}                     Set master password + generate recovery codes
+  ${CYAN}recover${NC}                  Reveal master password using a recovery code
   ${CYAN}add${NC}    <name>            Add a server interactively
   ${CYAN}edit${NC}   <name>            Edit an existing server config
   ${CYAN}ssh${NC}    <name>            Connect to a server
@@ -964,7 +1024,7 @@ cmd_install_completion() {
 _magneto_ssh_complete() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local cmds="init add edit ssh list info remove import validate filezilla tunnel dbeaver install-completion version update help"
+    local cmds="init recover add edit ssh list info remove import validate filezilla tunnel dbeaver install-completion version update help"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=($(compgen -W "${cmds}" -- "${cur}"))
@@ -1104,6 +1164,7 @@ main() {
 
     case "${cmd}" in
         init)                   cmd_init ;;
+        recover)                cmd_recover ;;
         add)                    cmd_add "$@" ;;
         edit)                   cmd_update "$@" ;;
         ssh)                    cmd_ssh "$@" ;;
@@ -1123,7 +1184,7 @@ main() {
     esac
 
     case "${cmd}" in
-        version|upgrade|update|self-update|help|--help|-h|--version|-v) : ;;
+        version|upgrade|update|self-update|help|--help|-h|--version|-v|recover) : ;;
         *) check_for_update > /dev/null 2>&1 & show_update_notice ;;
     esac
 }
