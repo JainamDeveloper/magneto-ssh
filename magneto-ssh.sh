@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="1.2.0"
+VERSION="1.2.1"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 CONFIG_DIR="${HOME}/.magneto-ssh"
@@ -557,15 +557,23 @@ cmd_validate() {
     ensure_dirs
 
     local timeout=5
+    local filter=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --timeout|-t) timeout="$2"; shift 2 ;;
-            *) shift ;;
+            *) filter+=("$1"); shift ;;
         esac
     done
 
     local servers
-    mapfile -t servers < <(list_server_names)
+    if [[ ${#filter[@]} -gt 0 ]]; then
+        for name in "${filter[@]}"; do
+            server_exists "${name}" || die "Server not found: ${name}"
+        done
+        servers=("${filter[@]}")
+    else
+        mapfile -t servers < <(list_server_names)
+    fi
     [[ ${#servers[@]} -eq 0 ]] && { warn "No servers configured."; return; }
 
     local needs_master=false
