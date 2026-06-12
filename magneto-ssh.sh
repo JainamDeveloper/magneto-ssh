@@ -616,15 +616,31 @@ cmd_validate() {
 
     for name in "${servers[@]}"; do
         local file; file=$(server_file "${name}")
-        local host port
+        local host port user auth_type password
         host=$(read_field "${file}" HOST)
         port=$(read_field "${file}" PORT)
+        user=$(read_field "${file}" USER)
+        auth_type=$(read_field "${file}" AUTH_TYPE)
+        password=$(read_field "${file}" PASSWORD)
 
         local padded; padded=$(printf "%-${pad}s" "${name}")
 
         if tcp_check "${host}" "${port}" "${timeout}"; then
-            printf "  %s ${GREEN}✓${NC}  reachable\n" "${padded}"
-            (( ++ok_count ))
+            if [[ "${auth_type}" == "password" && -n "${password}" ]]; then
+                if timeout "${timeout}" sshpass -p "${password}" \
+                    ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+                    -o PasswordAuthentication=yes -o PubkeyAuthentication=no \
+                    -o BatchMode=no "${user}@${host}" -p "${port}" "exit" 2>/dev/null; then
+                    printf "  %s ${GREEN}✓${NC}  auth OK\n" "${padded}"
+                    (( ++ok_count ))
+                else
+                    printf "  %s ${YELLOW}⚠${NC}  auth failed (wrong password?)\n" "${padded}"
+                    (( ++fail_count ))
+                fi
+            else
+                printf "  %s ${GREEN}✓${NC}  reachable\n" "${padded}"
+                (( ++ok_count ))
+            fi
         else
             printf "  %s ${RED}✗${NC}  unreachable\n" "${padded}"
             (( ++fail_count ))
