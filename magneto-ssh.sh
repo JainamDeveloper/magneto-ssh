@@ -293,78 +293,78 @@ cmd_update() {
         printf "  Host [%s]: " "${cur_host}"; read -r host; host="${host:-${cur_host}}"
         [[ -n "${host}" ]] || die "Host is required."
     fi
-    if _field_chosen "Port"; then
+    if _field_is_chosen 2; then
         printf "  Port [%s]: " "${cur_port}"; read -r port; port="${port:-${cur_port}}"
         [[ "${port}" =~ ^[0-9]+$ && "${port}" -ge 1 && "${port}" -le 65535 ]] || die "Invalid port."
     fi
-    if _field_chosen "SSH User"; then
+    if _field_is_chosen 3; then
         printf "  SSH user [%s]: " "${cur_user}"; read -r user; user="${user:-${cur_user}}"
         [[ -n "${user}" ]] || die "User is required."
     fi
-    if _field_chosen "Auth Type"; then
+    if _field_is_chosen 4; then
         printf "  Auth type (current: %s):\n    1) password\n    2) ssh_key\n  Select: " "${cur_auth_type}"
         read -r _ac
         case "${_ac}" in 1) auth_type="password";; 2) auth_type="ssh_key";; esac
     fi
 
     local password="${cur_password}" ssh_key="${cur_ssh_key}"
-    if _field_chosen "SSH Password" && [[ "${auth_type}" == "password" ]]; then
+    if _field_is_chosen 5 && [[ "${auth_type}" == "password" ]]; then
         printf "  New SSH password: "; read -rs password; printf '\n'
     fi
-    if _field_chosen "SSH Key" && [[ "${auth_type}" == "ssh_key" ]]; then
+    if _field_is_chosen 6 && [[ "${auth_type}" == "ssh_key" ]]; then
         printf "  SSH key path [%s]: " "${cur_ssh_key}"; read -r ssh_key; ssh_key="${ssh_key:-${cur_ssh_key}}"
     fi
 
     local project_dir="${cur_project_dir}" admin_url="${cur_admin_url}" admin_user="${cur_admin_user}"
     local frontend_url="${cur_frontend_url}"
-    if _field_chosen "Project Dir"; then
+    if _field_is_chosen 7; then
         printf "  Project dir [%s]: " "${cur_project_dir}"; read -r project_dir
         project_dir="${project_dir:-${cur_project_dir}}"
     fi
-    if _field_chosen "Admin URL"; then
+    if _field_is_chosen 8; then
         printf "  Admin URL [%s]: " "${cur_admin_url}"; read -r admin_url
         admin_url="${admin_url:-${cur_admin_url}}"
     fi
-    if _field_chosen "Admin User"; then
+    if _field_is_chosen 9; then
         printf "  Admin username [%s]: " "${cur_admin_user}"; read -r admin_user
         admin_user="${admin_user:-${cur_admin_user}}"
     fi
-    if _field_chosen "Frontend URL"; then
+    if _field_is_chosen 11; then
         printf "  Frontend URL [%s]: " "${cur_frontend_url}"; read -r frontend_url
         frontend_url="${frontend_url:-${cur_frontend_url}}"
     fi
 
     local admin_password="${cur_admin_password}" git_token="${cur_git_token}"
-    if _field_chosen "Admin Password"; then
+    if _field_is_chosen 10; then
         printf "  New admin password: "; read -rs admin_password; printf '\n'
     fi
-    if _field_chosen "Git Token"; then
+    if _field_is_chosen 12; then
         printf "  New git token: "; read -rs git_token; printf '\n'
     fi
 
     local db_host="${cur_db_host:-127.0.0.1}" db_port="${cur_db_port:-3306}"
     local db_name="${cur_db_name}" db_user="${cur_db_user}" db_password="${cur_db_password}"
     local tunnel_local_port="${cur_tunnel_local_port:-13306}"
-    if _field_chosen "DB Host"; then
+    if _field_is_chosen 13; then
         printf "  DB host [%s]: " "${cur_db_host:-127.0.0.1}"; read -r db_host
         db_host="${db_host:-${cur_db_host:-127.0.0.1}}"
     fi
-    if _field_chosen "DB Port"; then
+    if _field_is_chosen 14; then
         printf "  DB port [%s]: " "${cur_db_port:-3306}"; read -r db_port
         db_port="${db_port:-${cur_db_port:-3306}}"
     fi
-    if _field_chosen "DB Name"; then
+    if _field_is_chosen 15; then
         printf "  DB name [%s]: " "${cur_db_name}"; read -r db_name
         db_name="${db_name:-${cur_db_name}}"
     fi
-    if _field_chosen "DB User"; then
+    if _field_is_chosen 16; then
         printf "  DB user [%s]: " "${cur_db_user}"; read -r db_user
         db_user="${db_user:-${cur_db_user}}"
     fi
-    if _field_chosen "DB Password"; then
+    if _field_is_chosen 17; then
         printf "  New DB password: "; read -rs db_password; printf '\n'
     fi
-    if _field_chosen "Tunnel Port"; then
+    if _field_is_chosen 18; then
         printf "  Tunnel local port [%s]: " "${cur_tunnel_local_port:-13306}"; read -r tunnel_local_port
         tunnel_local_port="${tunnel_local_port:-${cur_tunnel_local_port:-13306}}"
     fi
