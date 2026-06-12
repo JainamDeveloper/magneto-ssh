@@ -11,7 +11,6 @@ Pure Bash — no Python, no pip, no venv.
 | Tool | Purpose | Install |
 |------|---------|---------|
 | `bash` 4.0+ | Runtime | Pre-installed on Linux/macOS |
-| `openssl` | Password encryption (AES-256-CBC) | Pre-installed |
 | `ssh` | SSH connections and tunnels | Pre-installed |
 | `sshpass` | Password-based SSH (non-interactive) | `sudo apt install sshpass` |
 | `python3` | FileZilla XML import only | `sudo apt install python3` |
@@ -19,7 +18,7 @@ Pure Bash — no Python, no pip, no venv.
 | `dbeaver` or `dbeaver-ce` | `dbeaver` command — database GUI | [dbeaver.io](https://dbeaver.io/download/) |
 | `lsof` | Tunnel port management | Pre-installed |
 
-Minimum required for core commands (`init`, `add`, `ssh`, `list`, etc.): **openssl + ssh + sshpass**.
+Minimum required for core commands (`add`, `ssh`, `list`, etc.): **ssh + sshpass**.
 
 ---
 
@@ -56,11 +55,10 @@ source ~/.bashrc
 ## First Run
 
 ```bash
-magneto-ssh init
+magneto-ssh add myproject_stage
 ```
 
-Sets a master password used to encrypt SSH passwords, admin passwords, DB passwords, and git tokens.
-**This password cannot be recovered. Do not forget it.**
+Interactive prompts collect server details. Passwords are stored plaintext in `~/.magneto-ssh/servers/<name>`.
 
 ---
 
@@ -75,7 +73,7 @@ magneto-ssh add myproject_stage
 Interactive prompts collect:
 - Host, port, SSH user, auth type (password or SSH key)
 - Optional: project directory, admin URL/user/password, frontend URL, git token
-- Optional: DB host, DB port, DB name, DB user, DB password, tunnel local port
+- Optional: DB host, DB port, DB name, DB user, DB password
 
 ### Connect via SSH
 
@@ -104,16 +102,15 @@ clienta_dev           10.0.0.50         admin     2222   ssh_key   -
 magneto-ssh info myproject_stage
 ```
 
-Shows all fields. Passwords are shown as `[encrypted]` — never plain text.
+Shows all fields including plaintext passwords.
 
 ### Update a server
 
 ```bash
-magneto-ssh update myproject_stage
+magneto-ssh edit myproject_stage
 ```
 
-Prompts for every field with the current value shown in `[ ]`. Press Enter to keep it.
-Supports renaming the server. Master password is only asked if a secret field is changed.
+Select which fields to update. Prompts only for selected fields.
 
 ### Remove a server
 
@@ -127,7 +124,7 @@ magneto-ssh remove myproject_stage
 magneto-ssh import ~/Desktop/FileZilla.xml
 ```
 
-Requires `python3`. Parses FileZilla's site manager XML export, decodes stored passwords (base64), re-encrypts them with your master password, and saves each server as a config file.
+Requires `python3`. Parses FileZilla's site manager XML export and saves each server as a config file.
 
 ### Validate connections
 
@@ -136,12 +133,14 @@ magneto-ssh validate
 magneto-ssh validate --timeout 10
 ```
 
+Tests TCP connectivity and password authentication for password-auth servers.
+
 ```
 Checking servers...
 
-  myproject_stage         connected
-  myproject_production    connected
-  clienta_dev             connection timeout
+  myproject_stage         ✓  auth OK
+  myproject_production    ✓  reachable
+  clienta_dev             ✗  unreachable
 
 ! 2/3 reachable, 1 failed.
 ```
@@ -154,7 +153,7 @@ magneto-ssh filezilla myproject_stage
 magneto-ssh fz myproject_stage
 ```
 
-Decrypts the SSH password and launches FileZilla directly connected to the server via SFTP.
+Launches FileZilla directly connected to the server via SFTP.
 Requires `filezilla` to be installed.
 
 ### Open DB tunnel
@@ -163,8 +162,8 @@ Requires `filezilla` to be installed.
 magneto-ssh tunnel myproject_stage
 ```
 
-Creates an SSH tunnel forwarding `localhost:<TUNNEL_LOCAL_PORT>` to `<DB_HOST>:<DB_PORT>` on the remote server.
-Default local port: `13306`. Prints connection details when the tunnel is up.
+Creates an SSH tunnel forwarding `localhost:13306` to `<DB_HOST>:<DB_PORT>` on the remote server.
+Prints connection details when the tunnel is up.
 
 Close the tunnel:
 ```bash
@@ -179,7 +178,7 @@ magneto-ssh dbeaver myproject_stage
 magneto-ssh db myproject_stage
 ```
 
-Opens the SSH tunnel (above), then launches DBeaver with a pre-filled MySQL connection.
+Opens the SSH tunnel, then launches DBeaver with a pre-filled MySQL connection.
 Requires `dbeaver` or `dbeaver-ce` to be installed.
 
 ---
@@ -193,7 +192,7 @@ magneto-ssh install-completion
 source ~/.bash_completion.d/magneto-ssh
 ```
 
-Tab-completing server names works for: `ssh`, `info`, `update`, `remove`, `filezilla`, `tunnel`, `dbeaver`
+Tab-completing server names works for: `ssh`, `scp`, `info`, `edit`, `remove`, `filezilla`, `tunnel`, `dbeaver`
 
 ```bash
 magneto-ssh ssh myp<TAB>
@@ -207,9 +206,7 @@ magneto-ssh ssh myp<TAB>
 | Path | Permissions | Contents |
 |------|-------------|----------|
 | `~/.magneto-ssh/` | `700` | Config directory |
-| `~/.magneto-ssh/servers/<name>` | `600` | Per-server config (passwords encrypted) |
-| `~/.magneto-ssh/.salt` | `600` | PBKDF2 salt |
-| `~/.magneto-ssh/.verify` | `600` | Encrypted verification token |
+| `~/.magneto-ssh/servers/<name>` | `600` | Per-server config (plaintext passwords) |
 | `~/.magneto-ssh/keys/` | `700` | Optional SSH key storage |
 
 Per-server config format (KEY=value):
@@ -219,30 +216,34 @@ HOST=1.2.3.4
 PORT=22
 USER=deploy
 AUTH_TYPE=password
-PASSWORD=<encrypted>
+PASSWORD=mypassword
 SSH_KEY=
 PROJECT_DIR=~/myproject/current
 ADMIN_URL=https://stage.myproject.com/admin
 ADMIN_USER=admin
-ADMIN_PASSWORD=<encrypted>
+ADMIN_PASSWORD=adminpass
 FRONTEND_URL=https://stage.myproject.com
-GIT_TOKEN=<encrypted>
+GIT_TOKEN=ghp_xxxxx
 DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_NAME=myproject_db
 DB_USER=dbuser
-DB_PASSWORD=<encrypted>
-TUNNEL_LOCAL_PORT=13306
+DB_PASSWORD=dbpass
 ```
 
 ---
 
-## Security Model
+## Security
 
-- Sensitive fields (`PASSWORD`, `ADMIN_PASSWORD`, `GIT_TOKEN`, `DB_PASSWORD`) are encrypted with AES-256-CBC via OpenSSL.
-- The encryption key is derived from your master password via PBKDF2-HMAC-SHA256 with 310,000 iterations and a random 16-byte salt.
-- Plain-text passwords are never written to disk.
-- The master password is never stored — only an encrypted verification token is kept.
+⚠️ **Plaintext Storage**: Passwords are stored plaintext in `~/.magneto-ssh/servers/<name>` (mode `600`).
+- Server configs are readable only by you (permission `600`).
+- Suitable for local development environments.
+- Not suitable for multi-user systems or production credentials.
+
+For production use, consider:
+- Storing passwords in a secrets manager instead of magneto-ssh.
+- Using SSH key authentication only.
+- Running in restricted environments where only you have access.
 
 ---
 
@@ -260,18 +261,19 @@ curl -fsSL https://raw.githubusercontent.com/JainamDeveloper/magneto-ssh/main/in
 
 | Command | Shorthand | Description |
 |---------|-----------|-------------|
-| `init` | | Set master password (run once) |
 | `add <name>` | | Add a server interactively |
-| `update <name>` | `edit` | Update an existing server config |
+| `edit <name>` | `update` | Update an existing server config |
 | `ssh <name>` | | Connect via SSH |
+| `scp <name>` | `download` | Upload/download files via SCP |
 | `list` | | List all servers |
 | `info <name>` | | Show server details |
 | `remove <name>` | `rm`, `delete` | Delete a server config |
 | `import <file.xml>` | | Import from FileZilla XML |
-| `validate` | `check` | Test connectivity for all servers |
+| `validate` | `check` | Test connectivity and auth |
 | `filezilla <name>` | `fz` | Open in FileZilla (SFTP) |
 | `tunnel <name>` | | Create SSH tunnel to remote DB |
 | `dbeaver <name>` | `db` | Open tunnel + launch DBeaver |
 | `install-completion` | | Install bash tab completion |
+| `upgrade` | | Self-upgrade to latest version |
 | `version` | `--version` | Print version |
 | `help` | `--help` | Show help |
