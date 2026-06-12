@@ -29,7 +29,6 @@ echo "────────────────────────�
 info "Checking dependencies..."
 
 missing=()
-command -v openssl &>/dev/null || missing+=("openssl")
 command -v ssh     &>/dev/null || missing+=("ssh")
 command -v sshpass &>/dev/null || missing+=("sshpass")
 
@@ -74,16 +73,20 @@ cat > "${COMPLETION_DIR}/magneto-ssh" <<'COMPLETION'
 _magneto_ssh_complete() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local cmds="init add update ssh list info remove import validate filezilla tunnel dbeaver install-completion version help"
+    local cmds="add edit ssh scp download list info remove import validate filezilla tunnel dbeaver install-completion version update help"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
-        COMPREPLY=($(compgen -W "${cmds}" -- "${cur}"))
+        # Complete both commands and server names
+        local servers=""
+        [[ -d "${HOME}/.magneto-ssh/servers" ]] \
+            && servers=$(ls "${HOME}/.magneto-ssh/servers" 2>/dev/null | tr '\n' ' ')
+        COMPREPLY=($(compgen -W "${cmds} ${servers}" -- "${cur}"))
         compopt +o default 2>/dev/null
         return 0
     fi
 
     case "${prev}" in
-        ssh|info|remove|add|update|filezilla|fz|tunnel|dbeaver|db)
+        ssh|scp|download|info|remove|add|edit|update|filezilla|fz|tunnel|dbeaver|db)
             local servers=""
             [[ -d "${HOME}/.magneto-ssh/servers" ]] \
                 && servers=$(ls "${HOME}/.magneto-ssh/servers" 2>/dev/null | tr '\n' ' ')
@@ -113,7 +116,6 @@ echo ""
 printf "${BOLD}Done!${NC} Run the following to activate in your current shell:\n\n"
 printf "  ${CYAN}source ~/.bashrc${NC}\n\n"
 printf "Then get started:\n\n"
-printf "  ${CYAN}magneto-ssh init${NC}        # Set master password (run once)\n"
 printf "  ${CYAN}magneto-ssh add myserver${NC} # Add your first server\n"
-printf "  ${CYAN}magneto-ssh ssh myserver${NC} # Connect\n"
+printf "  ${CYAN}magneto-ssh myserver${NC}     # Connect directly\n"
 echo ""

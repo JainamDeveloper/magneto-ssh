@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
 # =============================================================================
 # magneto-ssh — SSH connection manager for Magento environments
-# Pure Bash. Zero dependencies beyond openssl, ssh, and sshpass (for passwords)
+# Pure Bash. Zero dependencies beyond ssh and sshpass (for passwords)
 # =============================================================================
 
 set -euo pipefail
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="1.2.801"
+VERSION="1.3.0"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 CONFIG_DIR="${HOME}/.magneto-ssh"
 SERVERS_DIR="${CONFIG_DIR}/servers"
 KEYS_DIR="${CONFIG_DIR}/keys"
-VERIFY_FILE="${CONFIG_DIR}/.verify"
 UPDATE_CACHE="${CONFIG_DIR}/.update_cache"
-RECOVERY_DIR="${CONFIG_DIR}/.recovery"
 
 # ── ANSI colors ───────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -38,72 +36,8 @@ die()  { err "$*"; exit 1; }
 
 # ── Directory setup ───────────────────────────────────────────────────────────
 ensure_dirs() {
-    mkdir -p "${SERVERS_DIR}" "${KEYS_DIR}" "${RECOVERY_DIR}"
-    chmod 700 "${CONFIG_DIR}" "${SERVERS_DIR}" "${KEYS_DIR}" "${RECOVERY_DIR}"
-}
-
-generate_password() {
-    tr -dc 'A-Za-z0-9!@#$%^&*' < /dev/urandom 2>/dev/null | head -c 20
-}
-
-generate_recovery_code() {
-    local out="" i
-    for i in 1 2 3 4 5; do
-        out+=$(tr -dc 'A-Z0-9' < /dev/urandom 2>/dev/null | head -c 5)
-        [[ $i -lt 5 ]] && out+="-"
-    done
-    printf "%s" "${out}"
-}
-
-# ── Encryption helpers ────────────────────────────────────────────────────────
-# _MSSH_PASS is used as env var to safely pass passwords with special characters.
-# Both functions return 1 on failure instead of triggering set -e.
-
-encrypt_value() {
-    local plaintext="$1" password="$2"
-    [[ -z "${plaintext}" ]] && return 0
-    export _MSSH_PASS="${password}"
-    local result
-    result=$(printf '%s' "${plaintext}" \
-        | openssl enc -aes-256-cbc -pbkdf2 -iter 310000 -salt \
-            -pass env:_MSSH_PASS -base64 -A 2>/dev/null) \
-        || { unset _MSSH_PASS; return 1; }
-    unset _MSSH_PASS
-    printf '%s' "${result}"
-}
-
-decrypt_value() {
-    local encrypted="$1" password="$2"
-    [[ -z "${encrypted}" ]] && return 0
-    export _MSSH_PASS="${password}"
-    local result
-    result=$(printf '%s' "${encrypted}" \
-        | openssl enc -aes-256-cbc -pbkdf2 -iter 310000 -d \
-            -pass env:_MSSH_PASS -base64 -A 2>/dev/null) \
-        || { unset _MSSH_PASS; return 1; }
-    unset _MSSH_PASS
-    printf '%s' "${result}"
-}
-
-is_initialized() {
-    [[ -f "${VERIFY_FILE}" ]]
-}
-
-require_init() {
-    is_initialized || die "Not initialised. Run: magneto-ssh init"
-}
-
-# Prompt for and verify master password. Stores result in global MASTER_PW.
-prompt_master_password() {
-    require_init
-    printf "  Master password: "
-    read -rs MASTER_PW; printf '\n'
-    local stored result
-    stored=$(cat "${VERIFY_FILE}")
-    result=$(decrypt_value "${stored}" "${MASTER_PW}") \
-        || die "Incorrect master password."
-    [[ "${result}" == "magneto-ssh-verified-v1" ]] \
-        || die "Incorrect master password."
+    mkdir -p "${SERVERS_DIR}" "${KEYS_DIR}"
+    chmod 700 "${CONFIG_DIR}" "${SERVERS_DIR}" "${KEYS_DIR}"
 }
 
 # ── Config field I/O ──────────────────────────────────────────────────────────
@@ -155,82 +89,6 @@ tcp_check() {
 # Commands
 # =============================================================================
 
-cmd_init() {
-    ensure_dirs
-
-    if is_initialized; then
-        printf "Already initialised. Re-initialise? This invalidates all stored passwords. [y/N] "
-        read -r confirm
-        [[ "${confirm,,}" == "y" ]] || exit 0
-    fi
-
-    printf "\n${BOLD}magneto-ssh setup${NC}\n\n"
-
-    # Generate suggested master password
-    local suggested
-    suggested=$(generate_password)
-    printf "${DIM}  Suggested master password (press Enter to use, or type your own):${NC}\n"
-    printf "  ${BOLD}${suggested}${NC}\n\n"
-    printf "  Master password: "; read -rs pw1; printf '\n'
-    [[ -n "${pw1}" ]] || pw1="${suggested}"
-
-    printf "  Confirm password: "; read -rs pw2; printf '\n'
-    [[ -n "${pw2}" ]] || pw2="${pw1}"
-    [[ "${pw1}" == "${pw2}" ]] || die "Passwords do not match."
-
-    # Write verify token
-    local token
-    token=$(encrypt_value "magneto-ssh-verified-v1" "${pw1}") \
-        || die "openssl failed. Is openssl installed?"
-    printf '%s\n' "${token}" > "${VERIFY_FILE}"
-    chmod 600 "${VERIFY_FILE}"
-
-    # Generate 3 recovery codes and encrypt master password with each
-    local codes=() i enc
-    for i in 1 2 3; do
-        codes+=("$(generate_recovery_code)")
-        enc=$(encrypt_value "${pw1}" "${codes[$((i-1))]}") \
-            || die "Failed to generate recovery code ${i}."
-        printf '%s\n' "${enc}" > "${RECOVERY_DIR}/code${i}"
-        chmod 600 "${RECOVERY_DIR}/code${i}"
-    done
-
-    printf '\n'
-    ok "Master password set.\n"
-    printf "\n${BOLD}${YELLOW}⚠  Save these recovery codes somewhere safe.${NC}\n"
-    printf "${DIM}   Use any one of them with: magneto-ssh recover${NC}\n\n"
-    printf "  ${BOLD}Recovery code 1:${NC}  ${CYAN}%s${NC}\n" "${codes[0]}"
-    printf "  ${BOLD}Recovery code 2:${NC}  ${CYAN}%s${NC}\n" "${codes[1]}"
-    printf "  ${BOLD}Recovery code 3:${NC}  ${CYAN}%s${NC}\n\n" "${codes[2]}"
-    printf "${DIM}  Also save your master password: ${BOLD}%s${NC}\n\n" "${pw1}"
-}
-
-cmd_recover() {
-    ensure_dirs
-    require_init
-
-    printf "\n${BOLD}Master password recovery${NC}\n\n"
-    printf "  Enter a recovery code: "; read -r code
-    [[ -n "${code}" ]] || die "Recovery code cannot be empty."
-
-    local master="" i enc_file result
-    for i in 1 2 3; do
-        enc_file="${RECOVERY_DIR}/code${i}"
-        [[ -f "${enc_file}" ]] || continue
-        result=$(decrypt_value "$(cat "${enc_file}")" "${code}" 2>/dev/null) || continue
-        master="${result}"
-        break
-    done
-
-    [[ -n "${master}" ]] || die "Invalid recovery code."
-
-    printf '\n'
-    ok "Recovery successful.\n"
-    printf "\n  ${BOLD}Your master password is:${NC}  ${CYAN}%s${NC}\n\n" "${master}"
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-
 cmd_add() {
     local name="${1:-}"
     [[ -n "${name}" ]] || die "Usage: magneto-ssh add <name>"
@@ -259,10 +117,10 @@ cmd_add() {
     printf "  Select [1/2]: "; read -r auth_choice
     [[ "${auth_choice}" == "2" ]] && auth_type="ssh_key" || auth_type="password"
 
-    # ── Auth credentials (collect raw first, no master password yet) ──────────
-    local raw_pw="" ssh_key=""
+    # ── Auth credentials ──────────────────────────────────────────────────────
+    local password="" ssh_key=""
     if [[ "${auth_type}" == "password" ]]; then
-        printf "  SSH password: "; read -rs raw_pw; printf '\n'
+        printf "  SSH password: "; read -rs password; printf '\n'
     else
         printf "  Path to SSH key [~/.ssh/id_rsa]: "; read -r ssh_key
         ssh_key="${ssh_key:-~/.ssh/id_rsa}"
@@ -271,46 +129,32 @@ cmd_add() {
     # ── Optional metadata ─────────────────────────────────────────────────────
     printf "\n${DIM}  Optional fields — press Enter to skip:${NC}\n"
 
-    local project_dir admin_url admin_user raw_admin_pw frontend_url raw_git_token
+    local project_dir admin_url admin_user admin_password frontend_url git_token
     printf "  Project directory: ";  read -r project_dir
     printf "  Admin URL: ";          read -r admin_url
     printf "  Admin username: ";     read -r admin_user
 
-    raw_admin_pw=""
+    admin_password=""
     if [[ -n "${admin_user}" ]]; then
-        printf "  Admin password: "; read -rs raw_admin_pw; printf '\n'
+        printf "  Admin password: "; read -rs admin_password; printf '\n'
     fi
 
     printf "  Frontend URL: ";  read -r frontend_url
-    printf "  Git token: ";     read -rs raw_git_token; printf '\n'
+    printf "  Git token: ";     read -rs git_token; printf '\n'
 
     # ── Database (optional) ──────────────────────────────────────────────────
-    local db_host db_port db_name db_user raw_db_pw tunnel_local_port
+    local db_host db_port db_name db_user db_password tunnel_local_port
     printf "\n${DIM}  Database (optional — for SSH tunnel / DBeaver):${NC}\n"
     printf "  DB host [127.0.0.1]: ";   read -r db_host;          db_host="${db_host:-127.0.0.1}"
     printf "  DB port [3306]: ";        read -r db_port;           db_port="${db_port:-3306}"
     printf "  DB name: ";               read -r db_name
     printf "  DB user: ";               read -r db_user
-    raw_db_pw=""
+    db_password=""
     if [[ -n "${db_user}" ]]; then
-        printf "  DB password: ";       read -rs raw_db_pw; printf "\n"
+        printf "  DB password: ";       read -rs db_password; printf "\n"
     fi
     printf "  Local tunnel port [13306]: "; read -r tunnel_local_port
     tunnel_local_port="${tunnel_local_port:-13306}"
-
-    # ── Ask master password only if there is something to encrypt ─────────────
-    local password_enc="" admin_password_enc="" git_token_enc="" db_password_enc=""
-    local needs_encrypt=false
-    [[ -n "${raw_pw}" || -n "${raw_admin_pw}" || -n "${raw_git_token}" ]] \
-        && needs_encrypt=true
-
-    if [[ "${needs_encrypt}" == true ]]; then
-        printf '\n'
-        prompt_master_password
-        [[ -n "${raw_pw}" ]]         && password_enc=$(encrypt_value "${raw_pw}" "${MASTER_PW}")
-        [[ -n "${raw_admin_pw}" ]]   && admin_password_enc=$(encrypt_value "${raw_admin_pw}" "${MASTER_PW}")
-        [[ -n "${raw_git_token}" ]]  && git_token_enc=$(encrypt_value "${raw_git_token}" "${MASTER_PW}")
-    fi
 
     # ── Save ──────────────────────────────────────────────────────────────────
     write_server "${name}" <<EOF
@@ -318,19 +162,19 @@ HOST=${host}
 PORT=${port}
 USER=${user}
 AUTH_TYPE=${auth_type}
-PASSWORD=${password_enc}
+PASSWORD=${password}
 SSH_KEY=${ssh_key}
 PROJECT_DIR=${project_dir}
 ADMIN_URL=${admin_url}
 ADMIN_USER=${admin_user}
-ADMIN_PASSWORD=${admin_password_enc}
+ADMIN_PASSWORD=${admin_password}
 FRONTEND_URL=${frontend_url}
-GIT_TOKEN=${git_token_enc}
+GIT_TOKEN=${git_token}
 DB_HOST=${db_host}
 DB_PORT=${db_port}
 DB_NAME=${db_name}
 DB_USER=${db_user}
-DB_PASSWORD=${db_password_enc}
+DB_PASSWORD=${db_password}
 TUNNEL_LOCAL_PORT=${tunnel_local_port}
 EOF
 
@@ -347,28 +191,28 @@ cmd_update() {
     local file; file=$(server_file "${name}")
 
     # ── Load all current values ───────────────────────────────────────────────
-    local cur_host cur_port cur_user cur_auth_type cur_password_enc cur_ssh_key
-    local cur_project_dir cur_admin_url cur_admin_user cur_admin_password_enc
-    local cur_frontend_url cur_git_token_enc
-    local cur_db_host cur_db_port cur_db_name cur_db_user cur_db_password_enc cur_tunnel_local_port
+    local cur_host cur_port cur_user cur_auth_type cur_password cur_ssh_key
+    local cur_project_dir cur_admin_url cur_admin_user cur_admin_password
+    local cur_frontend_url cur_git_token
+    local cur_db_host cur_db_port cur_db_name cur_db_user cur_db_password cur_tunnel_local_port
 
     cur_host=$(read_field "${file}" HOST)
     cur_port=$(read_field "${file}" PORT)
     cur_user=$(read_field "${file}" USER)
     cur_auth_type=$(read_field "${file}" AUTH_TYPE)
-    cur_password_enc=$(read_field "${file}" PASSWORD)
+    cur_password=$(read_field "${file}" PASSWORD)
     cur_ssh_key=$(read_field "${file}" SSH_KEY)
     cur_project_dir=$(read_field "${file}" PROJECT_DIR)
     cur_admin_url=$(read_field "${file}" ADMIN_URL)
     cur_admin_user=$(read_field "${file}" ADMIN_USER)
-    cur_admin_password_enc=$(read_field "${file}" ADMIN_PASSWORD)
+    cur_admin_password=$(read_field "${file}" ADMIN_PASSWORD)
     cur_frontend_url=$(read_field "${file}" FRONTEND_URL)
-    cur_git_token_enc=$(read_field "${file}" GIT_TOKEN)
+    cur_git_token=$(read_field "${file}" GIT_TOKEN)
     cur_db_host=$(read_field "${file}" DB_HOST)
     cur_db_port=$(read_field "${file}" DB_PORT)
     cur_db_name=$(read_field "${file}" DB_NAME)
     cur_db_user=$(read_field "${file}" DB_USER)
-    cur_db_password_enc=$(read_field "${file}" DB_PASSWORD)
+    cur_db_password=$(read_field "${file}" DB_PASSWORD)
     cur_tunnel_local_port=$(read_field "${file}" TUNNEL_LOCAL_PORT)
 
     # ── Field picker ─────────────────────────────────────────────────────────
@@ -380,19 +224,19 @@ cmd_update() {
         "Port            [${cur_port}]"
         "SSH User        [${cur_user}]"
         "Auth Type       [${cur_auth_type}]"
-        "SSH Password    $([ -n "${cur_password_enc}" ] && echo "[encrypted]" || echo "[not set]")"
+        "SSH Password    $([ -n "${cur_password}" ] && echo "[set]" || echo "[not set]")"
         "SSH Key         [${cur_ssh_key}]"
         "Project Dir     [${cur_project_dir}]"
         "Admin URL       [${cur_admin_url}]"
         "Admin User      [${cur_admin_user}]"
-        "Admin Password  $([ -n "${cur_admin_password_enc}" ] && echo "[encrypted]" || echo "[not set]")"
+        "Admin Password  $([ -n "${cur_admin_password}" ] && echo "[set]" || echo "[not set]")"
         "Frontend URL    [${cur_frontend_url}]"
-        "Git Token       $([ -n "${cur_git_token_enc}" ] && echo "[encrypted]" || echo "[not set]")"
+        "Git Token       $([ -n "${cur_git_token}" ] && echo "[set]" || echo "[not set]")"
         "DB Host         [${cur_db_host}]"
         "DB Port         [${cur_db_port}]"
         "DB Name         [${cur_db_name}]"
         "DB User         [${cur_db_user}]"
-        "DB Password     $([ -n "${cur_db_password_enc}" ] && echo "[encrypted]" || echo "[not set]")"
+        "DB Password     $([ -n "${cur_db_password}" ] && echo "[set]" || echo "[not set]")"
         "Tunnel Port     [${cur_tunnel_local_port}]"
     )
 
@@ -451,9 +295,9 @@ cmd_update() {
         case "${_ac}" in 1) auth_type="password";; 2) auth_type="ssh_key";; esac
     fi
 
-    local raw_pw="" ssh_key="${cur_ssh_key}"
+    local password="${cur_password}" ssh_key="${cur_ssh_key}"
     if _field_chosen "SSH Password" && [[ "${auth_type}" == "password" ]]; then
-        printf "  New SSH password: "; read -rs raw_pw; printf '\n'
+        printf "  New SSH password: "; read -rs password; printf '\n'
     fi
     if _field_chosen "SSH Key" && [[ "${auth_type}" == "ssh_key" ]]; then
         printf "  SSH key path [%s]: " "${cur_ssh_key}"; read -r ssh_key; ssh_key="${ssh_key:-${cur_ssh_key}}"
@@ -478,16 +322,16 @@ cmd_update() {
         frontend_url="${frontend_url:-${cur_frontend_url}}"
     fi
 
-    local raw_admin_pw="" raw_git_token=""
+    local admin_password="${cur_admin_password}" git_token="${cur_git_token}"
     if _field_chosen "Admin Password"; then
-        printf "  New admin password: "; read -rs raw_admin_pw; printf '\n'
+        printf "  New admin password: "; read -rs admin_password; printf '\n'
     fi
     if _field_chosen "Git Token"; then
-        printf "  New git token: "; read -rs raw_git_token; printf '\n'
+        printf "  New git token: "; read -rs git_token; printf '\n'
     fi
 
     local db_host="${cur_db_host:-127.0.0.1}" db_port="${cur_db_port:-3306}"
-    local db_name="${cur_db_name}" db_user="${cur_db_user}" raw_db_pw=""
+    local db_name="${cur_db_name}" db_user="${cur_db_user}" db_password="${cur_db_password}"
     local tunnel_local_port="${cur_tunnel_local_port:-13306}"
     if _field_chosen "DB Host"; then
         printf "  DB host [%s]: " "${cur_db_host:-127.0.0.1}"; read -r db_host
@@ -506,32 +350,14 @@ cmd_update() {
         db_user="${db_user:-${cur_db_user}}"
     fi
     if _field_chosen "DB Password"; then
-        printf "  New DB password: "; read -rs raw_db_pw; printf '\n'
+        printf "  New DB password: "; read -rs db_password; printf '\n'
     fi
     if _field_chosen "Tunnel Port"; then
         printf "  Tunnel local port [%s]: " "${cur_tunnel_local_port:-13306}"; read -r tunnel_local_port
         tunnel_local_port="${tunnel_local_port:-${cur_tunnel_local_port:-13306}}"
     fi
 
-    # ── Encrypt only changed secret fields ────────────────────────────────────
-    local password_enc="${cur_password_enc}"
-    local admin_password_enc="${cur_admin_password_enc}"
-    local git_token_enc="${cur_git_token_enc}"
-    local db_password_enc="${cur_db_password_enc}"
-
-    local needs_encrypt=false
-    [[ -n "${raw_pw}" || -n "${raw_admin_pw}" || -n "${raw_git_token}" || -n "${raw_db_pw}" ]] \
-        && needs_encrypt=true
-
-    if [[ "${needs_encrypt}" == true ]]; then
-        printf '\n'; prompt_master_password
-        [[ -n "${raw_pw}" ]]        && password_enc=$(encrypt_value "${raw_pw}" "${MASTER_PW}")
-        [[ -n "${raw_admin_pw}" ]]  && admin_password_enc=$(encrypt_value "${raw_admin_pw}" "${MASTER_PW}")
-        [[ -n "${raw_git_token}" ]] && git_token_enc=$(encrypt_value "${raw_git_token}" "${MASTER_PW}")
-        [[ -n "${raw_db_pw}" ]]     && db_password_enc=$(encrypt_value "${raw_db_pw}" "${MASTER_PW}")
-    fi
-
-    [[ "${auth_type}" == "ssh_key" ]] && password_enc=""
+    [[ "${auth_type}" == "ssh_key" ]] && password=""
 
     # ── Save ──────────────────────────────────────────────────────────────────
     write_server "${new_name}" <<EOF
@@ -539,19 +365,19 @@ HOST=${host}
 PORT=${port}
 USER=${user}
 AUTH_TYPE=${auth_type}
-PASSWORD=${password_enc}
+PASSWORD=${password}
 SSH_KEY=${ssh_key}
 PROJECT_DIR=${project_dir}
 ADMIN_URL=${admin_url}
 ADMIN_USER=${admin_user}
-ADMIN_PASSWORD=${admin_password_enc}
+ADMIN_PASSWORD=${admin_password}
 FRONTEND_URL=${frontend_url}
-GIT_TOKEN=${git_token_enc}
+GIT_TOKEN=${git_token}
 DB_HOST=${db_host}
 DB_PORT=${db_port}
 DB_NAME=${db_name}
 DB_USER=${db_user}
-DB_PASSWORD=${db_password_enc}
+DB_PASSWORD=${db_password}
 TUNNEL_LOCAL_PORT=${tunnel_local_port}
 EOF
 
@@ -573,39 +399,110 @@ cmd_ssh() {
 
     local file; file=$(server_file "${name}")
 
-    local host port user auth_type password_enc ssh_key project_dir
+    local host port user auth_type password ssh_key project_dir
     host=$(read_field "${file}" HOST)
     port=$(read_field "${file}" PORT)
     user=$(read_field "${file}" USER)
     auth_type=$(read_field "${file}" AUTH_TYPE)
-    password_enc=$(read_field "${file}" PASSWORD)
+    password=$(read_field "${file}" PASSWORD)
     ssh_key=$(read_field "${file}" SSH_KEY)
     project_dir=$(read_field "${file}" PROJECT_DIR)
 
     local remote_cmd="exec \$SHELL"
-    [[ -n "${project_dir}" ]] && remote_cmd="cd ${project_dir} && exec \$SHELL"
+    [[ -n "${project_dir}" ]] && remote_cmd="cd ${project_dir} 2>/dev/null || cd; exec \$SHELL"
 
     printf "\n${DIM}Connecting to${NC} ${CYAN}%s${NC} ${DIM}→ %s@%s:%s${NC}\n\n" \
         "${name}" "${user}" "${host}" "${port}"
+
+    printf "${DIM}[cmd]${NC} "
 
     local ssh_opts=(-p "${port}"
                     -o StrictHostKeyChecking=accept-new
                     -o ConnectTimeout=10)
 
     if [[ "${auth_type}" == "password" ]]; then
-        prompt_master_password
-        local password
-        password=$(decrypt_value "${password_enc}" "${MASTER_PW}") \
-            || die "Failed to decrypt password. Was the master password changed?"
+        [[ -n "${password}" ]] || die "No password stored for '${name}'. Run: magneto-ssh edit ${name}"
         command -v sshpass &>/dev/null \
             || die "sshpass not installed. Run: sudo apt install sshpass"
+        echo "sshpass -p '***' ssh -p ${port} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o PubkeyAuthentication=no -o IdentitiesOnly=yes -tt ${user}@${host} ${remote_cmd}" >&2
         exec sshpass -p "${password}" \
-            ssh "${ssh_opts[@]}" "${user}@${host}" -t "${remote_cmd}"
+            ssh "${ssh_opts[@]}" \
+            -o PubkeyAuthentication=no \
+            -o IdentitiesOnly=yes \
+            -tt "${user}@${host}" "${remote_cmd}"
     else
         local expanded_key="${ssh_key/#\~/${HOME}}"
         [[ -f "${expanded_key}" ]] || die "SSH key not found: ${ssh_key}"
-        exec ssh "${ssh_opts[@]}" -i "${expanded_key}" "${user}@${host}" -t "${remote_cmd}"
+        echo "ssh -p ${port} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -i ${expanded_key} -t ${user}@${host} ${remote_cmd}" >&2
+        exec ssh "${ssh_opts[@]}" -i "${expanded_key}" -t "${user}@${host}" "${remote_cmd}"
     fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+cmd_scp() {
+    local name="${1:-}"
+    [[ -n "${name}" ]] || die "Usage: magneto-ssh scp <name> <remote_path> [local_dest]
+       magneto-ssh scp <name> --upload <local_path> <remote_path>"
+    server_exists "${name}" || die "Server '${name}' not found. Run: magneto-ssh list"
+    shift
+
+    local upload=false
+    local src="" dst=""
+
+    if [[ "${1:-}" == "--upload" || "${1:-}" == "-u" ]]; then
+        upload=true
+        shift
+        src="${1:-}"; dst="${2:-}"
+        [[ -n "${src}" && -n "${dst}" ]] \
+            || die "Usage: magneto-ssh scp <name> --upload <local_path> <remote_path>"
+        [[ -f "${src}" || -d "${src}" ]] || die "Local path not found: ${src}"
+    else
+        src="${1:-}"; dst="${2:-.}"
+        [[ -n "${src}" ]] \
+            || die "Usage: magneto-ssh scp <name> <remote_path> [local_dest]"
+    fi
+
+    local file; file=$(server_file "${name}")
+    local host port user auth_type password ssh_key
+    host=$(read_field "${file}" HOST)
+    port=$(read_field "${file}" PORT)
+    user=$(read_field "${file}" USER)
+    auth_type=$(read_field "${file}" AUTH_TYPE)
+    password=$(read_field "${file}" PASSWORD)
+    ssh_key=$(read_field "${file}" SSH_KEY)
+
+    local scp_opts=(-P "${port}" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+    local pw_only_opts=(-o PubkeyAuthentication=no -o IdentitiesOnly=yes)
+
+    if [[ "${upload}" == true ]]; then
+        printf "\n${DIM}Uploading${NC} ${CYAN}%s${NC} ${DIM}→ %s@%s:%s${NC}\n\n" \
+            "${src}" "${user}" "${host}" "${dst}"
+    else
+        printf "\n${DIM}Downloading${NC} ${CYAN}%s:%s${NC} ${DIM}→ %s${NC}\n\n" \
+            "${name}" "${src}" "${dst}"
+    fi
+
+    if [[ "${auth_type}" == "password" ]]; then
+        [[ -n "${password}" ]] || die "No password stored for '${name}'."
+        command -v sshpass &>/dev/null \
+            || die "sshpass not installed. Run: sudo apt install sshpass"
+        if [[ "${upload}" == true ]]; then
+            sshpass -p "${password}" scp "${scp_opts[@]}" "${pw_only_opts[@]}" "${src}" "${user}@${host}:${dst}"
+        else
+            sshpass -p "${password}" scp "${scp_opts[@]}" "${pw_only_opts[@]}" "${user}@${host}:${src}" "${dst}"
+        fi
+    else
+        local expanded_key="${ssh_key/#\~/${HOME}}"
+        [[ -f "${expanded_key}" ]] || die "SSH key not found: ${ssh_key}"
+        if [[ "${upload}" == true ]]; then
+            scp "${scp_opts[@]}" -i "${expanded_key}" "${src}" "${user}@${host}:${dst}"
+        else
+            scp "${scp_opts[@]}" -i "${expanded_key}" "${user}@${host}:${src}" "${dst}"
+        fi
+    fi
+
+    ok "Done."
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -667,7 +564,7 @@ cmd_info() {
     local -A secret_labels=([PASSWORD]="SSH password" [ADMIN_PASSWORD]="Admin pass" [GIT_TOKEN]="Git token")
     for field in PASSWORD ADMIN_PASSWORD GIT_TOKEN; do
         local val; val=$(read_field "${file}" "${field}")
-        [[ -n "${val}" ]] && printf "  %-16s ${DIM}[encrypted]${NC}\n" "${secret_labels[$field]}"
+        [[ -n "${val}" ]] && printf "  %-16s %s\n" "${secret_labels[$field]}" "${val}"
     done
     printf '\n'
 }
@@ -753,10 +650,7 @@ cmd_filezilla() {
     local file="${SERVERS_DIR}/${name}"
     [[ -f "${file}" ]] || die "Server not found: ${name}"
 
-    prompt_master_password
-    local pass="${MASTER_PW}"
-
-    local host port user auth_type ssh_pass project_dir
+    local host port user auth_type project_dir
     host=$(read_field "${file}" HOST)
     port=$(read_field "${file}" PORT)
     user=$(read_field "${file}" USER)
@@ -765,11 +659,9 @@ cmd_filezilla() {
 
     local uri
     if [[ "${auth_type}" == "password" ]]; then
-        local enc_pass raw_pass
-        enc_pass=$(read_field "${file}" PASSWORD)
-        raw_pass=$(decrypt_value "${enc_pass}" "${pass}") \
-            || die "Failed to decrypt SSH password. Wrong master password?"
-        # URL-encode the password for the URI
+        local raw_pass
+        raw_pass=$(read_field "${file}" PASSWORD)
+        [[ -n "${raw_pass}" ]] || die "No password stored for '${name}'."
         local encoded_pass
         encoded_pass=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "${raw_pass}")
         uri="sftp://${user}:${encoded_pass}@${host}:${port}"
@@ -795,9 +687,6 @@ cmd_tunnel() {
     local file="${SERVERS_DIR}/${name}"
     [[ -f "${file}" ]] || die "Server not found: ${name}"
 
-    prompt_master_password
-    local pass="${MASTER_PW}"
-
     local host port user auth_type db_host db_port tunnel_local_port
     host=$(read_field "${file}" HOST)
     port=$(read_field "${file}" PORT)
@@ -822,14 +711,15 @@ cmd_tunnel() {
     ok "Opening SSH tunnel: localhost:${tunnel_local_port} → ${db_host}:${db_port} via ${host}"
 
     if [[ "${auth_type}" == "password" ]]; then
-        local enc_pass raw_pass
-        enc_pass=$(read_field "${file}" PASSWORD)
-        raw_pass=$(decrypt_value "${enc_pass}" "${pass}") \
-            || die "Failed to decrypt SSH password. Wrong master password?"
+        local raw_pass
+        raw_pass=$(read_field "${file}" PASSWORD)
+        [[ -n "${raw_pass}" ]] || die "No password stored for '${name}'."
         export SSHPASS="${raw_pass}"
         sshpass -e ssh -f -N \
             -o StrictHostKeyChecking=accept-new \
             -o ExitOnForwardFailure=yes \
+            -o PubkeyAuthentication=no \
+            -o IdentitiesOnly=yes \
             -L "${tunnel_local_port}:${db_host}:${db_port}" \
             -p "${port}" "${user}@${host}"
         unset SSHPASS
@@ -870,28 +760,20 @@ cmd_dbeaver() {
         die "DBeaver not found. Install it from https://dbeaver.io"
     fi
 
-    # Open the tunnel first
+    # Open the tunnel first (sets up the port)
     cmd_tunnel "${name}"
 
-    local tunnel_local_port db_name db_user db_password_enc
+    local tunnel_local_port db_name db_user db_password
     tunnel_local_port=$(read_field "${file}" TUNNEL_LOCAL_PORT)
     tunnel_local_port="${tunnel_local_port:-13306}"
     db_name=$(read_field "${file}" DB_NAME)
     db_user=$(read_field "${file}" DB_USER)
-    db_password_enc=$(read_field "${file}" DB_PASSWORD)
-
-    local pass="${MASTER_PW}"
-
-    local db_pass=""
-    if [[ -n "${db_password_enc}" ]]; then
-        db_pass=$(decrypt_value "${db_password_enc}" "${pass}") \
-            || warn "Could not decrypt DB password — you may need to enter it in DBeaver."
-    fi
+    db_password=$(read_field "${file}" DB_PASSWORD)
 
     local con_str="driver=mysql8|host=127.0.0.1|port=${tunnel_local_port}"
-    [[ -n "${db_name}" ]] && con_str="${con_str}|database=${db_name}"
-    [[ -n "${db_user}" ]] && con_str="${con_str}|user=${db_user}"
-    [[ -n "${db_pass}"  ]] && con_str="${con_str}|password=${db_pass}"
+    [[ -n "${db_name}" ]]     && con_str="${con_str}|database=${db_name}"
+    [[ -n "${db_user}" ]]     && con_str="${con_str}|user=${db_user}"
+    [[ -n "${db_password}" ]] && con_str="${con_str}|password=${db_password}"
     con_str="${con_str}|name=${name}|save=true|connect=true"
 
     ok "Launching DBeaver → ${name} (127.0.0.1:${tunnel_local_port})"
@@ -910,8 +792,8 @@ cmd_import() {
 
     printf "\n${BOLD}Parsing FileZilla XML:${NC} %s\n\n" "${xml_file}"
 
-    # Parse with python3 stdlib — outputs TSV lines:
-    # slug \t host \t port \t user \t auth_type \t raw_pw \t keyfile \t project_dir \t orig_name
+    # Parse with python3 stdlib — outputs SOH-delimited lines:
+    # slug \x01 host \x01 port \x01 user \x01 auth_type \x01 raw_pw \x01 keyfile \x01 project_dir \x01 orig_name
     local parsed_data
     parsed_data=$(python3 -c "
 import base64, xml.etree.ElementTree as ET, re, sys
@@ -951,11 +833,10 @@ for s in tree.getroot().iter('Server'):
 
     [[ -n "${parsed_data}" ]] || { warn "No servers found in XML."; return; }
 
-    # ── Count servers and check for passwords ─────────────────────────────────
-    local total=0 has_password=false
+    # ── Count servers ─────────────────────────────────────────────────────────
+    local total=0
     while IFS=$'\x01' read -r sl host port user auth pw kf rd name; do
         (( ++total ))
-        [[ -n "${pw}" ]] && has_password=true
     done <<< "${parsed_data}"
 
     # ── Preview table ─────────────────────────────────────────────────────────
@@ -981,13 +862,6 @@ for s in tree.getroot().iter('Server'):
     printf "Overwrite existing servers? [y/N] "; read -r ow
     [[ "${ow,,}" == "y" ]] && overwrite_all=true
 
-    # ── Ask master password once (only if passwords to encrypt) ───────────────
-    MASTER_PW=""
-    if [[ "${has_password}" == true ]]; then
-        printf '\n'
-        prompt_master_password
-    fi
-
     # ── Import servers ────────────────────────────────────────────────────────
     printf '\n'
     local imported=0 skipped=0
@@ -998,17 +872,9 @@ for s in tree.getroot().iter('Server'):
             (( ++skipped )); continue
         fi
 
-        local password_enc=""
-        if [[ -n "${pw}" && -n "${MASTER_PW}" ]]; then
-            password_enc=$(encrypt_value "${pw}" "${MASTER_PW}") || {
-                printf "  ${RED}✗${NC} %-32s encrypt failed — skipped\n" "${sl}"
-                (( ++skipped )); continue
-            }
-        fi
-
-        printf 'HOST=%s\nPORT=%s\nUSER=%s\nAUTH_TYPE=%s\nPASSWORD=%s\nSSH_KEY=%s\nPROJECT_DIR=%s\nADMIN_URL=\nADMIN_USER=\nADMIN_PASSWORD=\nFRONTEND_URL=\nGIT_TOKEN=\n' \
+        printf 'HOST=%s\nPORT=%s\nUSER=%s\nAUTH_TYPE=%s\nPASSWORD=%s\nSSH_KEY=%s\nPROJECT_DIR=%s\nADMIN_URL=\nADMIN_USER=\nADMIN_PASSWORD=\nFRONTEND_URL=\nGIT_TOKEN=\nDB_HOST=\nDB_PORT=\nDB_NAME=\nDB_USER=\nDB_PASSWORD=\nTUNNEL_LOCAL_PORT=\n' \
             "${host}" "${port}" "${user}" "${auth}" \
-            "${password_enc}" "${kf}" "${rd}" \
+            "${pw}" "${kf}" "${rd}" \
             | write_server "${sl}"
 
         printf "  ${GREEN}✓${NC} %-32s imported  ${DIM}(%s)${NC}\n" "${sl}" "${name}"
@@ -1029,15 +895,16 @@ SSH connection manager for Magento environments.
 
 ${BOLD}Usage:${NC}
   magneto-ssh <command> [arguments]
+  magneto-ssh <name>               Connect directly to a server
 
 ${BOLD}Commands:${NC}
-  ${CYAN}init${NC}                     Set master password + generate recovery codes
-  ${CYAN}recover${NC}                  Reveal master password using a recovery code
   ${CYAN}add${NC}    <name>            Add a server interactively
   ${CYAN}edit${NC}   <name>            Edit an existing server config
   ${CYAN}ssh${NC}    <name>            Connect to a server
+  ${CYAN}scp${NC}    <name> <remote> [local]   Download file from server
+  ${CYAN}scp${NC}    <name> --upload <local> <remote>  Upload file to server
   ${CYAN}list${NC}                     List all configured servers
-  ${CYAN}info${NC}   <name>            Show server details (no passwords shown)
+  ${CYAN}info${NC}   <name>            Show server details
   ${CYAN}remove${NC} <name>            Delete a server config
   ${CYAN}import${NC}   <file.xml>        Import servers from FileZilla XML export
   ${CYAN}validate${NC} [--timeout N]   Test connectivity for all servers
@@ -1051,10 +918,9 @@ ${BOLD}Tab completion:${NC}
   magneto-ssh install-completion   Add bash tab completion to ~/.bashrc
 
 ${BOLD}Examples:${NC}
-  magneto-ssh init
   magneto-ssh add petzone_stage
-  magneto-ssh update petzone_stage
-  magneto-ssh ssh petzone_stage
+  magneto-ssh petzone_stage
+  magneto-ssh edit petzone_stage
   magneto-ssh list
   magneto-ssh info petzone_stage
 
@@ -1074,16 +940,20 @@ cmd_install_completion() {
 _magneto_ssh_complete() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local cmds="init recover add edit ssh list info remove import validate filezilla tunnel dbeaver install-completion version update help"
+    local cmds="add edit ssh scp download list info remove import validate filezilla tunnel dbeaver install-completion version update help"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
-        COMPREPLY=($(compgen -W "${cmds}" -- "${cur}"))
+        # Complete both commands and server names
+        local servers=""
+        [[ -d "${HOME}/.magneto-ssh/servers" ]] \
+            && servers=$(ls "${HOME}/.magneto-ssh/servers" 2>/dev/null | tr '\n' ' ')
+        COMPREPLY=($(compgen -W "${cmds} ${servers}" -- "${cur}"))
         compopt +o default 2>/dev/null
         return 0
     fi
 
     case "${prev}" in
-        ssh|info|remove|add|update|filezilla|fz|tunnel|dbeaver|db)
+        ssh|scp|download|info|remove|add|edit|update|filezilla|fz|tunnel|dbeaver|db)
             local servers=""
             [[ -d "${HOME}/.magneto-ssh/servers" ]] \
                 && servers=$(ls "${HOME}/.magneto-ssh/servers" 2>/dev/null | tr '\n' ' ')
@@ -1213,11 +1083,10 @@ main() {
     shift || true
 
     case "${cmd}" in
-        init)                   cmd_init ;;
-        recover)                cmd_recover ;;
         add)                    cmd_add "$@" ;;
         edit)                   cmd_update "$@" ;;
         ssh)                    cmd_ssh "$@" ;;
+        scp|download)           cmd_scp "$@" ;;
         list)                   cmd_list ;;
         info)                   cmd_info "$@" ;;
         remove|rm|delete)       cmd_remove "$@" ;;
@@ -1230,11 +1099,18 @@ main() {
         upgrade|update|self-update) cmd_upgrade ;;
         install-completion)     cmd_install_completion ;;
         help|--help|-h)         cmd_help ;;
-        *)                      err "Unknown command: ${cmd}"; cmd_help; exit 1 ;;
+        *)
+            # Direct connect: magneto-ssh <server-name>
+            if server_exists "${cmd}"; then
+                cmd_ssh "${cmd}" "$@"
+            else
+                err "Unknown command or server: ${cmd}"; cmd_help; exit 1
+            fi
+            ;;
     esac
 
     case "${cmd}" in
-        version|upgrade|update|self-update|help|--help|-h|--version|-v|recover) : ;;
+        version|upgrade|update|self-update|help|--help|-h|--version|-v) : ;;
         *) check_for_update > /dev/null 2>&1 & show_update_notice ;;
     esac
 }
