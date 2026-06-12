@@ -414,8 +414,6 @@ cmd_ssh() {
     printf "\n${DIM}Connecting to${NC} ${CYAN}%s${NC} ${DIM}→ %s@%s:%s${NC}\n\n" \
         "${name}" "${user}" "${host}" "${port}"
 
-    printf "${DIM}[cmd]${NC} "
-
     local ssh_opts=(-p "${port}"
                     -o StrictHostKeyChecking=accept-new
                     -o ConnectTimeout=10)
@@ -424,7 +422,6 @@ cmd_ssh() {
         [[ -n "${password}" ]] || die "No password stored for '${name}'. Run: magneto-ssh edit ${name}"
         command -v sshpass &>/dev/null \
             || die "sshpass not installed. Run: sudo apt install sshpass"
-        echo "sshpass -p '***' ssh -p ${port} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o PubkeyAuthentication=no -o IdentitiesOnly=yes -tt ${user}@${host} ${remote_cmd}" >&2
         exec sshpass -p "${password}" \
             ssh "${ssh_opts[@]}" \
             -o PubkeyAuthentication=no \
@@ -433,7 +430,6 @@ cmd_ssh() {
     else
         local expanded_key="${ssh_key/#\~/${HOME}}"
         [[ -f "${expanded_key}" ]] || die "SSH key not found: ${ssh_key}"
-        echo "ssh -p ${port} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -i ${expanded_key} -t ${user}@${host} ${remote_cmd}" >&2
         exec ssh "${ssh_opts[@]}" -i "${expanded_key}" -t "${user}@${host}" "${remote_cmd}"
     fi
 }
