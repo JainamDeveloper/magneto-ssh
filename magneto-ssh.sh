@@ -143,8 +143,8 @@ cmd_add() {
     printf "  Git token: ";     read -rs git_token; printf '\n'
 
     # ── Database (optional) ──────────────────────────────────────────────────
-    local db_host db_port db_name db_user db_password tunnel_local_port
-    printf "\n${DIM}  Database (optional — for SSH tunnel / DBeaver):${NC}\n"
+    local db_host db_port db_name db_user db_password
+    printf "\n${DIM}  Database (optional):${NC}\n"
     printf "  DB host [127.0.0.1]: ";   read -r db_host;          db_host="${db_host:-127.0.0.1}"
     printf "  DB port [3306]: ";        read -r db_port;           db_port="${db_port:-3306}"
     printf "  DB name: ";               read -r db_name
@@ -153,8 +153,6 @@ cmd_add() {
     if [[ -n "${db_user}" ]]; then
         printf "  DB password: ";       read -rs db_password; printf "\n"
     fi
-    printf "  Local tunnel port [13306]: "; read -r tunnel_local_port
-    tunnel_local_port="${tunnel_local_port:-13306}"
 
     # ── Save ──────────────────────────────────────────────────────────────────
     write_server "${name}" <<EOF
@@ -175,7 +173,6 @@ DB_PORT=${db_port}
 DB_NAME=${db_name}
 DB_USER=${db_user}
 DB_PASSWORD=${db_password}
-TUNNEL_LOCAL_PORT=${tunnel_local_port}
 EOF
 
     printf '\n'; ok "Server ${CYAN}${name}${NC} saved.\n"
@@ -194,7 +191,7 @@ cmd_update() {
     local cur_host cur_port cur_user cur_auth_type cur_password cur_ssh_key
     local cur_project_dir cur_admin_url cur_admin_user cur_admin_password
     local cur_frontend_url cur_git_token
-    local cur_db_host cur_db_port cur_db_name cur_db_user cur_db_password cur_tunnel_local_port
+    local cur_db_host cur_db_port cur_db_name cur_db_user cur_db_password
 
     cur_host=$(read_field "${file}" HOST)
     cur_port=$(read_field "${file}" PORT)
@@ -213,7 +210,6 @@ cmd_update() {
     cur_db_name=$(read_field "${file}" DB_NAME)
     cur_db_user=$(read_field "${file}" DB_USER)
     cur_db_password=$(read_field "${file}" DB_PASSWORD)
-    cur_tunnel_local_port=$(read_field "${file}" TUNNEL_LOCAL_PORT)
 
     # ── Field picker ─────────────────────────────────────────────────────────
     printf "\n${BOLD}Edit server:${NC} ${CYAN}%s${NC}\n" "${name}"
@@ -237,7 +233,6 @@ cmd_update() {
         "DB Name         [${cur_db_name}]"
         "DB User         [${cur_db_user}]"
         "DB Password     $([ -n "${cur_db_password}" ] && echo "[set]" || echo "[not set]")"
-        "Tunnel Port     [${cur_tunnel_local_port}]"
     )
 
     local -a chosen_indices=()
@@ -344,7 +339,6 @@ cmd_update() {
 
     local db_host="${cur_db_host:-127.0.0.1}" db_port="${cur_db_port:-3306}"
     local db_name="${cur_db_name}" db_user="${cur_db_user}" db_password="${cur_db_password}"
-    local tunnel_local_port="${cur_tunnel_local_port:-13306}"
     if _field_is_chosen 13; then
         printf "  DB host [%s]: " "${cur_db_host:-127.0.0.1}"; read -r db_host
         db_host="${db_host:-${cur_db_host:-127.0.0.1}}"
@@ -363,10 +357,6 @@ cmd_update() {
     fi
     if _field_is_chosen 17; then
         printf "  New DB password: "; read -rs db_password; printf '\n'
-    fi
-    if _field_is_chosen 18; then
-        printf "  Tunnel local port [%s]: " "${cur_tunnel_local_port:-13306}"; read -r tunnel_local_port
-        tunnel_local_port="${tunnel_local_port:-${cur_tunnel_local_port:-13306}}"
     fi
 
     [[ "${auth_type}" == "ssh_key" ]] && password=""
@@ -390,7 +380,6 @@ DB_PORT=${db_port}
 DB_NAME=${db_name}
 DB_USER=${db_user}
 DB_PASSWORD=${db_password}
-TUNNEL_LOCAL_PORT=${tunnel_local_port}
 EOF
 
     if [[ "${new_name}" != "${name}" ]]; then
@@ -702,109 +691,6 @@ cmd_filezilla() {
 
     ok "Launching FileZilla → ${name} (${host}:${port})"
     filezilla "${uri}" &
-    disown
-}
-
-
-cmd_tunnel() {
-    local name="${1:-}"
-    [[ -n "${name}" ]] || die "Usage: magneto-ssh tunnel <name>"
-    local file="${SERVERS_DIR}/${name}"
-    [[ -f "${file}" ]] || die "Server not found: ${name}"
-
-    local host port user auth_type db_host db_port tunnel_local_port
-    host=$(read_field "${file}" HOST)
-    port=$(read_field "${file}" PORT)
-    user=$(read_field "${file}" USER)
-    auth_type=$(read_field "${file}" AUTH_TYPE)
-    db_host=$(read_field "${file}" DB_HOST)
-    db_port=$(read_field "${file}" DB_PORT)
-    tunnel_local_port=$(read_field "${file}" TUNNEL_LOCAL_PORT)
-
-    db_host="${db_host:-127.0.0.1}"
-    db_port="${db_port:-3306}"
-    tunnel_local_port="${tunnel_local_port:-13306}"
-
-    # Kill any existing tunnel on the same local port
-    local existing_pid
-    existing_pid=$(lsof -ti "tcp:${tunnel_local_port}" 2>/dev/null || true)
-    if [[ -n "${existing_pid}" ]]; then
-        kill "${existing_pid}" 2>/dev/null || true
-        warn "Killed existing tunnel on port ${tunnel_local_port}."
-    fi
-
-    ok "Opening SSH tunnel: localhost:${tunnel_local_port} → ${db_host}:${db_port} via ${host}"
-
-    if [[ "${auth_type}" == "password" ]]; then
-        local raw_pass
-        raw_pass=$(read_field "${file}" PASSWORD)
-        [[ -n "${raw_pass}" ]] || die "No password stored for '${name}'."
-        export SSHPASS="${raw_pass}"
-        sshpass -e ssh -f -N \
-            -o StrictHostKeyChecking=accept-new \
-            -o ExitOnForwardFailure=yes \
-            -o PubkeyAuthentication=no \
-            -o IdentitiesOnly=yes \
-            -L "${tunnel_local_port}:${db_host}:${db_port}" \
-            -p "${port}" "${user}@${host}"
-        unset SSHPASS
-    else
-        local key_path
-        key_path=$(read_field "${file}" SSH_KEY)
-        local key_args=()
-        [[ -n "${key_path}" ]] && key_args=(-i "${key_path}")
-        ssh -f -N \
-            "${key_args[@]}" \
-            -o StrictHostKeyChecking=accept-new \
-            -o ExitOnForwardFailure=yes \
-            -L "${tunnel_local_port}:${db_host}:${db_port}" \
-            -p "${port}" "${user}@${host}"
-    fi
-
-    local db_name db_user
-    db_name=$(read_field "${file}" DB_NAME)
-    db_user=$(read_field "${file}" DB_USER)
-
-    printf "\n"
-    ok "Tunnel active on localhost:${tunnel_local_port}"
-    printf "  ${BOLD}Host:${NC}      127.0.0.1\n"
-    printf "  ${BOLD}Port:${NC}      ${tunnel_local_port}\n"
-    printf "  ${BOLD}Database:${NC}  ${db_name:-<not set>}\n"
-    printf "  ${BOLD}User:${NC}      ${db_user:-<not set>}\n"
-    printf "\nClose tunnel:  kill \$(lsof -ti tcp:${tunnel_local_port})\n"
-}
-
-
-cmd_dbeaver() {
-    local name="${1:-}"
-    [[ -n "${name}" ]] || die "Usage: magneto-ssh dbeaver <name>"
-    local file="${SERVERS_DIR}/${name}"
-    [[ -f "${file}" ]] || die "Server not found: ${name}"
-
-    if ! command -v dbeaver &>/dev/null && ! command -v dbeaver-ce &>/dev/null; then
-        die "DBeaver not found. Install it from https://dbeaver.io"
-    fi
-
-    # Open the tunnel first (sets up the port)
-    cmd_tunnel "${name}"
-
-    local tunnel_local_port db_name db_user db_password
-    tunnel_local_port=$(read_field "${file}" TUNNEL_LOCAL_PORT)
-    tunnel_local_port="${tunnel_local_port:-13306}"
-    db_name=$(read_field "${file}" DB_NAME)
-    db_user=$(read_field "${file}" DB_USER)
-    db_password=$(read_field "${file}" DB_PASSWORD)
-
-    local con_str="driver=mysql8|host=127.0.0.1|port=${tunnel_local_port}"
-    [[ -n "${db_name}" ]]     && con_str="${con_str}|database=${db_name}"
-    [[ -n "${db_user}" ]]     && con_str="${con_str}|user=${db_user}"
-    [[ -n "${db_password}" ]] && con_str="${con_str}|password=${db_password}"
-    con_str="${con_str}|name=${name}|save=true|connect=true"
-
-    ok "Launching DBeaver → ${name} (127.0.0.1:${tunnel_local_port})"
-    local dbeaver_bin
-    dbeaver_bin=$(command -v dbeaver 2>/dev/null || command -v dbeaver-ce)
-    "${dbeaver_bin}" -con "${con_str}" &
     disown
 }
 
