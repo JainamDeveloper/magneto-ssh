@@ -240,13 +240,19 @@ cmd_update() {
         "Tunnel Port     [${cur_tunnel_local_port}]"
     )
 
-    local chosen_labels=""
+    local -a chosen_indices=()
     if command -v fzf &>/dev/null; then
         printf "${DIM}  ↑↓ navigate  Tab=toggle  Enter=confirm${NC}\n\n"
-        chosen_labels=$(printf '%s\n' "${field_labels[@]}" \
+        local selected
+        selected=$(printf '%s\n' "${field_labels[@]}" \
             | fzf --multi --prompt="Select fields to edit: " \
                   --height=~100% --reverse --no-info \
                   --bind 'tab:toggle+down') || true
+        while IFS= read -r line; do
+            for i in "${!field_labels[@]}"; do
+                [[ "${field_labels[$i]}" == "$line" ]] && chosen_indices+=("$i") && break
+            done
+        done <<< "$selected"
     else
         printf "${DIM}  Enter numbers separated by spaces (e.g. 1 3 6):${NC}\n\n"
         local i=1
@@ -257,17 +263,23 @@ cmd_update() {
         printf "\n  Fields to edit: "; read -r choices
         for n in ${choices}; do
             [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#field_labels[@]} )) \
-                && chosen_labels+="${field_labels[$((n-1))]}"$'\n'
+                && chosen_indices+=("$((n-1))")
         done
     fi
 
-    [[ -n "${chosen_labels}" ]] || { warn "No fields selected. Nothing changed."; return 0; }
+    [[ ${#chosen_indices[@]} -gt 0 ]] || { warn "No fields selected. Nothing changed."; return 0; }
 
-    _field_chosen() { [[ "${chosen_labels}" == *"$1"* ]]; }
+    _field_is_chosen() {
+        local idx=$1
+        for i in "${chosen_indices[@]}"; do
+            [[ "$i" == "$idx" ]] && return 0
+        done
+        return 1
+    }
 
     # ── Prompt only selected fields ───────────────────────────────────────────
     local new_name="${name}"
-    if _field_chosen "Name"; then
+    if _field_is_chosen 0; then
         printf "  Server name [%s]: " "${name}"; read -r new_name
         new_name="${new_name:-${name}}"
         if [[ "${new_name}" != "${name}" ]] && server_exists "${new_name}"; then
@@ -277,7 +289,7 @@ cmd_update() {
     fi
 
     local host="${cur_host}" port="${cur_port}" user="${cur_user}" auth_type="${cur_auth_type}"
-    if _field_chosen "Host"; then
+    if _field_is_chosen 1; then
         printf "  Host [%s]: " "${cur_host}"; read -r host; host="${host:-${cur_host}}"
         [[ -n "${host}" ]] || die "Host is required."
     fi
