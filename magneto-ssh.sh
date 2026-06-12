@@ -422,11 +422,12 @@ cmd_ssh() {
         [[ -n "${password}" ]] || die "No password stored for '${name}'. Run: magneto-ssh edit ${name}"
         command -v sshpass &>/dev/null \
             || die "sshpass not installed. Run: sudo apt install sshpass"
-        exec sshpass -p "${password}" \
+        sshpass -p "${password}" \
             ssh "${ssh_opts[@]}" \
             -o PubkeyAuthentication=no \
             -o IdentitiesOnly=yes \
-            -tt "${user}@${host}" "${remote_cmd}"
+            -tt "${user}@${host}" "${remote_cmd}" \
+            || die "Stored password incorrect or authentication failed."
     else
         local expanded_key="${ssh_key/#\~/${HOME}}"
         [[ -f "${expanded_key}" ]] || die "SSH key not found: ${ssh_key}"
