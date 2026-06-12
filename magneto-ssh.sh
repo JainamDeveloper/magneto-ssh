@@ -694,6 +694,110 @@ cmd_filezilla() {
     disown
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+
+cmd_tunnel() {
+    local name="${1:-}"
+    [[ -n "${name}" ]] || die "Usage: magneto-ssh tunnel <name>"
+    local file="${SERVERS_DIR}/${name}"
+    [[ -f "${file}" ]] || die "Server not found: ${name}"
+
+    local host port user auth_type db_host db_port tunnel_local_port
+    host=$(read_field "${file}" HOST)
+    port=$(read_field "${file}" PORT)
+    user=$(read_field "${file}" USER)
+    auth_type=$(read_field "${file}" AUTH_TYPE)
+    db_host=$(read_field "${file}" DB_HOST)
+    db_port=$(read_field "${file}" DB_PORT)
+    tunnel_local_port=$(read_field "${file}" TUNNEL_LOCAL_PORT)
+
+    db_host="${db_host:-127.0.0.1}"
+    db_port="${db_port:-3306}"
+    tunnel_local_port="${tunnel_local_port:-13306}"
+
+    local existing_pid
+    existing_pid=$(lsof -ti "tcp:${tunnel_local_port}" 2>/dev/null || true)
+    if [[ -n "${existing_pid}" ]]; then
+        kill "${existing_pid}" 2>/dev/null || true
+        warn "Killed existing tunnel on port ${tunnel_local_port}."
+    fi
+
+    ok "Opening SSH tunnel: localhost:${tunnel_local_port} → ${db_host}:${db_port} via ${host}"
+
+    if [[ "${auth_type}" == "password" ]]; then
+        local raw_pass
+        raw_pass=$(read_field "${file}" PASSWORD)
+        [[ -n "${raw_pass}" ]] || die "No password stored for '${name}'."
+        export SSHPASS="${raw_pass}"
+        sshpass -e ssh -f -N \
+            -o StrictHostKeyChecking=accept-new \
+            -o ExitOnForwardFailure=yes \
+            -o PubkeyAuthentication=no \
+            -o IdentitiesOnly=yes \
+            -L "${tunnel_local_port}:${db_host}:${db_port}" \
+            -p "${port}" "${user}@${host}"
+        unset SSHPASS
+    else
+        local key_path
+        key_path=$(read_field "${file}" SSH_KEY)
+        local key_args=()
+        [[ -n "${key_path}" ]] && key_args=(-i "${key_path}")
+        ssh -f -N \
+            "${key_args[@]}" \
+            -o StrictHostKeyChecking=accept-new \
+            -o ExitOnForwardFailure=yes \
+            -L "${tunnel_local_port}:${db_host}:${db_port}" \
+            -p "${port}" "${user}@${host}"
+    fi
+
+    local db_name db_user
+    db_name=$(read_field "${file}" DB_NAME)
+    db_user=$(read_field "${file}" DB_USER)
+
+    printf "\n"
+    ok "Tunnel active on localhost:${tunnel_local_port}"
+    printf "  ${BOLD}Host:${NC}      127.0.0.1\n"
+    printf "  ${BOLD}Port:${NC}      ${tunnel_local_port}\n"
+    printf "  ${BOLD}Database:${NC}  ${db_name:-<not set>}\n"
+    printf "  ${BOLD}User:${NC}      ${db_user:-<not set>}\n"
+    printf "\nClose tunnel:  kill \$(lsof -ti tcp:${tunnel_local_port})\n"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+cmd_dbeaver() {
+    local name="${1:-}"
+    [[ -n "${name}" ]] || die "Usage: magneto-ssh dbeaver <name>"
+    local file="${SERVERS_DIR}/${name}"
+    [[ -f "${file}" ]] || die "Server not found: ${name}"
+
+    if ! command -v dbeaver &>/dev/null && ! command -v dbeaver-ce &>/dev/null; then
+        die "DBeaver not found. Install it from https://dbeaver.io"
+    fi
+
+    cmd_tunnel "${name}"
+
+    local tunnel_local_port db_name db_user db_password
+    tunnel_local_port=$(read_field "${file}" TUNNEL_LOCAL_PORT)
+    tunnel_local_port="${tunnel_local_port:-13306}"
+    db_name=$(read_field "${file}" DB_NAME)
+    db_user=$(read_field "${file}" DB_USER)
+    db_password=$(read_field "${file}" DB_PASSWORD)
+
+    local con_str="driver=mysql8|host=127.0.0.1|port=${tunnel_local_port}"
+    [[ -n "${db_name}" ]]     && con_str="${con_str}|database=${db_name}"
+    [[ -n "${db_user}" ]]     && con_str="${con_str}|user=${db_user}"
+    [[ -n "${db_password}" ]] && con_str="${con_str}|password=${db_password}"
+    con_str="${con_str}|name=${name}|save=true|connect=true"
+
+    ok "Launching DBeaver → ${name} (127.0.0.1:${tunnel_local_port})"
+    local dbeaver_bin
+    dbeaver_bin=$(command -v dbeaver 2>/dev/null || command -v dbeaver-ce)
+    "${dbeaver_bin}" -con "${con_str}" &
+    disown
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 cmd_import() {
     local xml_file="${1:-}"
