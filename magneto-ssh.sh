@@ -1337,6 +1337,18 @@ cmd_upgrade() {
         ok "Already on latest version (v${VERSION})."
         return 0
     fi
+    # Guard against downgrades — e.g. a locally built version not pushed yet
+    if [[ -n "${latest}" ]]; then
+        local newer
+        newer=$(printf "%s\n%s\n" "${VERSION}" "${latest}" | sort -V | tail -1)
+        if [[ "${newer}" == "${VERSION}" ]]; then
+            warn "Local version v${VERSION} is newer than GitHub (v${latest})."
+            printf "Downgrade to v%s? [y/N] " "${latest}"
+            read -r _dg
+            [[ "${_dg,,}" == "y" ]] || { ok "Kept v${VERSION}."; return 0; }
+        fi
+    fi
+
     printf "Upgrading magneto-ssh"
     [[ -n "${latest}" ]] && printf " v%s → v%s" "${VERSION}" "${latest}"
     printf "...\n"
