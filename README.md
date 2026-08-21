@@ -74,6 +74,7 @@ Interactive prompts collect:
 - Host, port, SSH user, auth type (password or SSH key)
 - Optional: project directory, admin URL/user/password, frontend URL, git token
 - Optional: DB host, DB port, DB name, DB user, DB password
+- Optional: disk usage path used by `housekeeping` (default `~/application/`)
 
 ### Connect via SSH
 
@@ -181,6 +182,34 @@ magneto-ssh db myproject_stage
 Opens the SSH tunnel, then launches DBeaver with a pre-filled MySQL connection.
 Requires `dbeaver` or `dbeaver-ce` to be installed.
 
+### Housekeeping report
+
+```bash
+magneto-ssh housekeeping myproject_stage
+# shorthand:
+magneto-ssh hk myproject_stage
+```
+
+One SSH round-trip, three checks:
+
+1. **exception.log** — reads `<PROJECT_DIR>/var/log/exception.log`, reports size, line count and
+   last-modified time, prints the last lines, and downloads a timestamped copy to
+   `~/.magneto-ssh/reports/<name>/`.
+2. **Indexer status** — runs `php bin/magento indexer:status` (auto-detects the remote PHP binary)
+   and flags any indexer that is not Ready.
+3. **Disk usage** — runs `df -h` on `DISK_PATH` (default `~/application/`), warning at 80% used and
+   erroring at 90%.
+
+Exits with status `1` when any check fails, so it can be used in scripts.
+
+| Option | Description |
+|--------|-------------|
+| `--tail N` | Lines of `exception.log` to print inline (default 20, `0` disables) |
+| `--no-download` | Skip downloading the log file |
+| `--output DIR` | Directory for the downloaded log (default `~/.magneto-ssh/reports/<name>`) |
+| `--log PATH` | Override the log path |
+| `--disk PATH` | Override the `df -h` path for this run |
+
 ---
 
 ## Tab Completion
@@ -192,7 +221,7 @@ magneto-ssh install-completion
 source ~/.bash_completion.d/magneto-ssh
 ```
 
-Tab-completing server names works for: `ssh`, `scp`, `info`, `edit`, `remove`, `filezilla`, `tunnel`, `dbeaver`
+Tab-completing server names works for: `ssh`, `scp`, `info`, `edit`, `remove`, `filezilla`, `tunnel`, `dbeaver`, `housekeeping`
 
 ```bash
 magneto-ssh ssh myp<TAB>
@@ -229,6 +258,7 @@ DB_PORT=3306
 DB_NAME=myproject_db
 DB_USER=dbuser
 DB_PASSWORD=dbpass
+DISK_PATH=~/application/
 ```
 
 ---
@@ -273,6 +303,7 @@ curl -fsSL https://raw.githubusercontent.com/JainamDeveloper/magneto-ssh/main/in
 | `filezilla <name>` | `fz` | Open in FileZilla (SFTP) |
 | `tunnel <name>` | | Create SSH tunnel to remote DB |
 | `dbeaver <name>` | `db` | Open tunnel + launch DBeaver |
+| `housekeeping <name>` | `hk` | Indexer status + disk usage + download exception.log |
 | `install-completion` | | Install bash tab completion |
 | `upgrade` | | Self-upgrade to latest version |
 | `version` | `--version` | Print version |

@@ -73,7 +73,7 @@ cat > "${COMPLETION_DIR}/magneto-ssh" <<'COMPLETION'
 _magneto_ssh_complete() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local cmds="add edit ssh scp download list info remove import validate filezilla tunnel dbeaver install-completion version update help"
+    local cmds="add edit ssh scp download list info remove import validate filezilla tunnel dbeaver housekeeping hk install-completion version update help"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         # Complete both commands and server names
@@ -86,7 +86,7 @@ _magneto_ssh_complete() {
     fi
 
     case "${prev}" in
-        ssh|scp|download|info|remove|add|edit|update|filezilla|fz|tunnel|dbeaver|db)
+        ssh|scp|download|info|remove|add|edit|update|filezilla|fz|tunnel|dbeaver|db|housekeeping|hk)
             local servers=""
             [[ -d "${HOME}/.magneto-ssh/servers" ]] \
                 && servers=$(ls "${HOME}/.magneto-ssh/servers" 2>/dev/null | tr '\n' ' ')

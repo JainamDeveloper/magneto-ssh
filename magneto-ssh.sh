@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="1.3.002"
+VERSION="1.4.000"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 CONFIG_DIR="${HOME}/.magneto-ssh"
@@ -142,6 +142,10 @@ cmd_add() {
     printf "  Frontend URL: ";  read -r frontend_url
     printf "  Git token: ";     read -rs git_token; printf '\n'
 
+    local disk_path
+    printf "  Disk usage path (for df -h) [~/application/]: "
+    read -r disk_path
+
     # ── Database (optional) ──────────────────────────────────────────────────
     local db_host db_port db_name db_user db_password
     printf "\n${DIM}  Database (optional):${NC}\n"
@@ -173,6 +177,7 @@ DB_PORT=${db_port}
 DB_NAME=${db_name}
 DB_USER=${db_user}
 DB_PASSWORD=${db_password}
+DISK_PATH=${disk_path}
 EOF
 
     printf '\n'; ok "Server ${CYAN}${name}${NC} saved.\n"
@@ -191,7 +196,7 @@ cmd_update() {
     local cur_host cur_port cur_user cur_auth_type cur_password cur_ssh_key
     local cur_project_dir cur_admin_url cur_admin_user cur_admin_password
     local cur_frontend_url cur_git_token
-    local cur_db_host cur_db_port cur_db_name cur_db_user cur_db_password
+    local cur_db_host cur_db_port cur_db_name cur_db_user cur_db_password cur_disk_path
 
     cur_host=$(read_field "${file}" HOST)
     cur_port=$(read_field "${file}" PORT)
@@ -210,6 +215,7 @@ cmd_update() {
     cur_db_name=$(read_field "${file}" DB_NAME)
     cur_db_user=$(read_field "${file}" DB_USER)
     cur_db_password=$(read_field "${file}" DB_PASSWORD)
+    cur_disk_path=$(read_field "${file}" DISK_PATH)
 
     # ── Field picker ─────────────────────────────────────────────────────────
     printf "\n${BOLD}Edit server:${NC} ${CYAN}%s${NC}\n" "${name}"
@@ -233,6 +239,7 @@ cmd_update() {
         "DB Name         [${cur_db_name}]"
         "DB User         [${cur_db_user}]"
         "DB Password     $([ -n "${cur_db_password}" ] && echo "[set]" || echo "[not set]")"
+        "Disk Path       [${cur_disk_path}]"
     )
 
     local -a chosen_indices=()
@@ -359,6 +366,12 @@ cmd_update() {
         printf "  New DB password: "; read -rs db_password; printf '\n'
     fi
 
+    local disk_path="${cur_disk_path}"
+    if _field_is_chosen 18; then
+        printf "  Disk usage path [%s]: " "${cur_disk_path}"; read -r disk_path
+        disk_path="${disk_path:-${cur_disk_path}}"
+    fi
+
     [[ "${auth_type}" == "ssh_key" ]] && password=""
 
     # ── Save ──────────────────────────────────────────────────────────────────
@@ -380,6 +393,7 @@ DB_PORT=${db_port}
 DB_NAME=${db_name}
 DB_USER=${db_user}
 DB_PASSWORD=${db_password}
+DISK_PATH=${disk_path}
 EOF
 
     if [[ "${new_name}" != "${name}" ]]; then
@@ -550,9 +564,10 @@ cmd_info() {
         [HOST]="Host" [PORT]="Port" [USER]="User" [AUTH_TYPE]="Auth type"
         [SSH_KEY]="SSH key" [PROJECT_DIR]="Project dir"
         [ADMIN_URL]="Admin URL" [ADMIN_USER]="Admin user" [FRONTEND_URL]="Frontend URL"
+        [DISK_PATH]="Disk path"
     )
     local field_order=(HOST PORT USER AUTH_TYPE SSH_KEY PROJECT_DIR
-                       ADMIN_URL ADMIN_USER FRONTEND_URL)
+                       ADMIN_URL ADMIN_USER FRONTEND_URL DISK_PATH)
 
     for field in "${field_order[@]}"; do
         local val; val=$(read_field "${file}" "${field}")
@@ -799,6 +814,267 @@ cmd_dbeaver() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Remote execution helpers ─────────────────────────────────────────────────
+
+# _ssh_exec <name> <script>  — run a bash script on the remote host, non-interactive.
+_ssh_exec() {
+    local name="$1" script="$2"
+    local file; file=$(server_file "${name}")
+
+    local host port user auth_type password ssh_key
+    host=$(read_field "${file}" HOST)
+    port=$(read_field "${file}" PORT)
+    user=$(read_field "${file}" USER)
+    auth_type=$(read_field "${file}" AUTH_TYPE)
+    password=$(read_field "${file}" PASSWORD)
+    ssh_key=$(read_field "${file}" SSH_KEY)
+
+    local ssh_opts=(-p "${port}"
+                    -o StrictHostKeyChecking=accept-new
+                    -o ConnectTimeout=15
+                    -o LogLevel=ERROR
+                    -o BatchMode=no)
+
+    if [[ "${auth_type}" == "password" ]]; then
+        [[ -n "${password}" ]] || die "No password stored for '${name}'. Run: magneto-ssh edit ${name}"
+        command -v sshpass &>/dev/null \
+            || die "sshpass not installed. Run: sudo apt install sshpass"
+        printf '%s' "${script}" | sshpass -p "${password}" \
+            ssh "${ssh_opts[@]}" -o PubkeyAuthentication=no -o IdentitiesOnly=yes \
+            "${user}@${host}" "bash -s"
+    else
+        local expanded_key="${ssh_key/#\~/${HOME}}"
+        [[ -f "${expanded_key}" ]] || die "SSH key not found: ${ssh_key}"
+        printf '%s' "${script}" | ssh "${ssh_opts[@]}" -i "${expanded_key}" \
+            "${user}@${host}" "bash -s"
+    fi
+}
+
+# _scp_fetch <name> <remote_path> <local_path>  — quiet file download.
+_scp_fetch() {
+    local name="$1" remote="$2" local_dst="$3"
+    local file; file=$(server_file "${name}")
+
+    local host port user auth_type password ssh_key
+    host=$(read_field "${file}" HOST)
+    port=$(read_field "${file}" PORT)
+    user=$(read_field "${file}" USER)
+    auth_type=$(read_field "${file}" AUTH_TYPE)
+    password=$(read_field "${file}" PASSWORD)
+    ssh_key=$(read_field "${file}" SSH_KEY)
+
+    local scp_opts=(-P "${port}" -q
+                    -o StrictHostKeyChecking=accept-new
+                    -o ConnectTimeout=15
+                    -o LogLevel=ERROR)
+
+    if [[ "${auth_type}" == "password" ]]; then
+        sshpass -p "${password}" scp "${scp_opts[@]}" \
+            -o PubkeyAuthentication=no -o IdentitiesOnly=yes \
+            "${user}@${host}:${remote}" "${local_dst}"
+    else
+        local expanded_key="${ssh_key/#\~/${HOME}}"
+        scp "${scp_opts[@]}" -i "${expanded_key}" "${user}@${host}:${remote}" "${local_dst}"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Shell-quote a path for the remote host, keeping a leading ~ expandable there.
+_hk_rquote() {
+    local p="$1"
+    if [[ "${p}" == "~" ]]; then
+        printf '"$HOME"'
+    elif [[ "${p}" == "~/"* ]]; then
+        printf '"$HOME"/%s' "$(printf '%q' "${p#\~/}")"
+    else
+        printf '%q' "${p}"
+    fi
+}
+
+cmd_housekeeping() {
+    local name="" tail_lines=20 download=true out_dir="" log_path="" disk_path_override=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-download)   download=false; shift ;;
+            --tail|-n)       tail_lines="${2:-20}"; shift 2 ;;
+            --output|-o)     out_dir="${2:-}"; shift 2 ;;
+            --log)           log_path="${2:-}"; shift 2 ;;
+            --disk)          disk_path_override="${2:-}"; shift 2 ;;
+            *)               [[ -z "${name}" ]] && name="$1"; shift ;;
+        esac
+    done
+
+    [[ -n "${name}" ]] || die "Usage: magneto-ssh housekeeping <name> [--tail N] [--no-download] [--output DIR] [--log PATH] [--disk PATH]"
+    server_exists "${name}" || die "Server '${name}' not found. Run: magneto-ssh list"
+
+    local file; file=$(server_file "${name}")
+    local host project_dir disk_path
+    host=$(read_field "${file}" HOST)
+    project_dir=$(read_field "${file}" PROJECT_DIR)
+    disk_path=$(read_field "${file}" DISK_PATH)
+
+    [[ -n "${project_dir}" ]] \
+        || die "No PROJECT_DIR set for '${name}'. Run: magneto-ssh edit ${name}"
+
+    [[ -n "${disk_path_override}" ]] && disk_path="${disk_path_override}"
+    disk_path="${disk_path:-~/application/}"
+    log_path="${log_path:-${project_dir%/}/var/log/exception.log}"
+
+    printf "\n${BOLD}${CYAN}Housekeeping report${NC} — ${BOLD}%s${NC} ${DIM}(%s)${NC}\n" "${name}" "${host}"
+    printf "${DIM}%s${NC}\n\n" "$(date '+%Y-%m-%d %H:%M:%S')"
+
+    # ── One SSH round-trip collects everything ───────────────────────────────
+    local q_project q_disk q_log
+    q_project=$(_hk_rquote "${project_dir}")
+    q_disk=$(_hk_rquote "${disk_path}")
+    q_log=$(_hk_rquote "${log_path}")
+
+    local remote_script
+    remote_script=$(cat <<REMOTE
+set -u
+cd ${q_project} 2>/dev/null || { echo "__ERR__ project dir not found: ${project_dir}"; }
+
+echo "__SECTION__INDEXER"
+if [ -f ${q_project}/bin/magento ]; then
+    PHP_BIN=""
+    for c in php php8.4 php8.3 php8.2 php8.1 php8.0 php7.4; do
+        command -v "\$c" >/dev/null 2>&1 && { PHP_BIN="\$c"; break; }
+    done
+    if [ -n "\$PHP_BIN" ]; then
+        "\$PHP_BIN" ${q_project}/bin/magento indexer:status 2>&1
+    else
+        echo "__ERR__ no php binary found in PATH"
+    fi
+else
+    echo "__ERR__ bin/magento not found in ${project_dir}"
+fi
+
+echo "__SECTION__DISK"
+df -h ${q_disk} 2>&1
+
+echo "__SECTION__LOG"
+if [ -f ${q_log} ]; then
+    echo "EXISTS=1"
+    echo "SIZE=\$(du -h ${q_log} 2>/dev/null | cut -f1)"
+    echo "LINES=\$(wc -l < ${q_log} 2>/dev/null | tr -d ' ')"
+    echo "MTIME=\$(date -r ${q_log} '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
+    echo "__TAIL__"
+    tail -n ${tail_lines} ${q_log} 2>/dev/null
+else
+    echo "EXISTS=0"
+fi
+REMOTE
+)
+
+    local output=""
+    output=$(_ssh_exec "${name}" "${remote_script}") || die "SSH command failed for '${name}'."
+
+    _hk_section() {
+        printf '%s\n' "${output}" | awk -v s="__SECTION__$1" '
+            $0 == s { grab=1; next }
+            /^__SECTION__/ { grab=0 }
+            grab { print }'
+    }
+
+    local exit_status=0
+
+    # ── 1. Indexer status ────────────────────────────────────────────────────
+    printf "${BOLD}1) Indexer status${NC}\n"
+    local indexer; indexer=$(_hk_section INDEXER)
+    if [[ -z "${indexer}" || "${indexer}" == *"__ERR__"* ]]; then
+        err "  ${indexer#*__ERR__}"
+        exit_status=1
+    else
+        local bad
+        bad=$(printf '%s\n' "${indexer}" \
+              | grep -Ei 'invalid|reindex required|suspended' || true)
+        printf '%s\n' "${indexer}" | sed 's/^/  /'
+        printf '\n'
+        if [[ -n "${bad}" ]]; then
+            local bad_count; bad_count=$(printf '%s\n' "${bad}" | grep -c . || true)
+            err "  ${bad_count} indexer(s) NOT ready:"
+            printf '%s\n' "${bad}" | sed 's/^/    /'
+            exit_status=1
+        else
+            ok "  All indexers Ready."
+        fi
+    fi
+    printf '\n'
+
+    # ── 2. Disk usage ────────────────────────────────────────────────────────
+    printf "${BOLD}2) Disk usage${NC} ${DIM}(df -h %s)${NC}\n" "${disk_path}"
+    local disk; disk=$(_hk_section DISK)
+    if [[ -z "${disk}" ]]; then
+        err "  No df output."
+        exit_status=1
+    else
+        printf '%s\n' "${disk}" | sed 's/^/  /'
+        printf '\n'
+        local use_pct
+        use_pct=$(printf '%s\n' "${disk}" | awk 'NR>1 {for(i=1;i<=NF;i++) if($i ~ /%$/){gsub("%","",$i); print $i; exit}}')
+        if [[ "${use_pct}" =~ ^[0-9]+$ ]]; then
+            if (( use_pct >= 90 )); then
+                err "  Disk ${use_pct}% used — critical."
+                exit_status=1
+            elif (( use_pct >= 80 )); then
+                warn "  Disk ${use_pct}% used — watch it."
+            else
+                ok "  Disk ${use_pct}% used."
+            fi
+        fi
+    fi
+    printf '\n'
+
+    # ── 3. exception.log ─────────────────────────────────────────────────────
+    printf "${BOLD}3) exception.log${NC} ${DIM}(%s)${NC}\n" "${log_path}"
+    local logsec; logsec=$(_hk_section LOG)
+    local log_exists log_size log_lines log_mtime
+    log_exists=$(printf '%s\n' "${logsec}" | grep '^EXISTS=' | head -1 | cut -d'=' -f2- || true)
+
+    if [[ "${log_exists}" != "1" ]]; then
+        warn "  Not present on server (no exceptions logged, or path differs)."
+    else
+        log_size=$(printf  '%s\n' "${logsec}" | grep '^SIZE='  | head -1 | cut -d'=' -f2- || true)
+        log_lines=$(printf '%s\n' "${logsec}" | grep '^LINES=' | head -1 | cut -d'=' -f2- || true)
+        log_mtime=$(printf '%s\n' "${logsec}" | grep '^MTIME=' | head -1 | cut -d'=' -f2- || true)
+
+        printf "  %-14s %s\n" "Size"          "${log_size:-?}"
+        printf "  %-14s %s\n" "Lines"         "${log_lines:-?}"
+        printf "  %-14s %s\n" "Last modified" "${log_mtime:-?}"
+
+        if [[ "${tail_lines}" -gt 0 ]]; then
+            printf "\n  ${DIM}last %s lines:${NC}\n" "${tail_lines}"
+            printf '%s\n' "${logsec}" | sed -n '/^__TAIL__$/,$p' | tail -n +2 | sed 's/^/  │ /'
+        fi
+
+        if [[ "${download}" == true ]]; then
+            out_dir="${out_dir:-${CONFIG_DIR}/reports/${name}}"
+            mkdir -p "${out_dir}"
+            local stamp; stamp=$(date '+%Y%m%d-%H%M%S')
+            local dest="${out_dir%/}/exception-${stamp}.log"
+            printf '\n'
+            if _scp_fetch "${name}" "$(_hk_rquote "${log_path}")" "${dest}"; then
+                ok "  Downloaded → ${CYAN}${dest}${NC}"
+            else
+                err "  Download failed: ${log_path}"
+                exit_status=1
+            fi
+        fi
+    fi
+
+    printf '\n'
+    if [[ ${exit_status} -eq 0 ]]; then
+        ok "Housekeeping clean for ${CYAN}${name}${NC}.\n"
+    else
+        warn "Housekeeping found issues on ${CYAN}${name}${NC}.\n"
+    fi
+    return ${exit_status}
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 cmd_import() {
     local xml_file="${1:-}"
     [[ -n "${xml_file}" ]] || die "Usage: magneto-ssh import <filezilla_export.xml>"
@@ -887,7 +1163,7 @@ for s in tree.getroot().iter('Server'):
             (( ++skipped )); continue
         fi
 
-        printf 'HOST=%s\nPORT=%s\nUSER=%s\nAUTH_TYPE=%s\nPASSWORD=%s\nSSH_KEY=%s\nPROJECT_DIR=%s\nADMIN_URL=\nADMIN_USER=\nADMIN_PASSWORD=\nFRONTEND_URL=\nGIT_TOKEN=\nDB_HOST=\nDB_PORT=\nDB_NAME=\nDB_USER=\nDB_PASSWORD=\nTUNNEL_LOCAL_PORT=\n' \
+        printf 'HOST=%s\nPORT=%s\nUSER=%s\nAUTH_TYPE=%s\nPASSWORD=%s\nSSH_KEY=%s\nPROJECT_DIR=%s\nADMIN_URL=\nADMIN_USER=\nADMIN_PASSWORD=\nFRONTEND_URL=\nGIT_TOKEN=\nDB_HOST=\nDB_PORT=\nDB_NAME=\nDB_USER=\nDB_PASSWORD=\nTUNNEL_LOCAL_PORT=\nDISK_PATH=\n' \
             "${host}" "${port}" "${user}" "${auth}" \
             "${pw}" "${kf}" "${rd}" \
             | write_server "${sl}"
@@ -926,6 +1202,7 @@ ${BOLD}Commands:${NC}
   ${CYAN}filezilla${NC} <name>         Open server in FileZilla (SFTP)
   ${CYAN}tunnel${NC}   <name>          Create SSH tunnel to remote DB (localhost:TUNNEL_LOCAL_PORT)
   ${CYAN}dbeaver${NC}  <name>          Open tunnel + launch DBeaver with DB connection
+  ${CYAN}housekeeping${NC} <name>     Indexer status + disk usage + download exception.log
   ${CYAN}version${NC}                  Print version and check for updates
   ${CYAN}update${NC}                   Update magneto-ssh to latest version
 
@@ -938,6 +1215,15 @@ ${BOLD}Examples:${NC}
   magneto-ssh edit petzone_stage
   magneto-ssh list
   magneto-ssh info petzone_stage
+  magneto-ssh housekeeping petzone_stage
+  magneto-ssh hk petzone_stage --tail 50 --no-download
+
+${BOLD}housekeeping options:${NC}
+  --tail N          Lines of exception.log to show inline (default 20, 0 = none)
+  --no-download     Skip downloading exception.log
+  --output DIR      Where to save the log (default ~/.magneto-ssh/reports/<name>)
+  --log PATH        Override exception.log path (default <PROJECT_DIR>/var/log/exception.log)
+  --disk PATH       Override df -h path (default DISK_PATH, else ~/application/)
 
 ${BOLD}Name format:${NC}  project_environment
   e.g.  petzone_stage   petzone_production   clientA_dev
@@ -955,7 +1241,7 @@ cmd_install_completion() {
 _magneto_ssh_complete() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local cmds="add edit ssh scp download list info remove import validate filezilla tunnel dbeaver install-completion version update help"
+    local cmds="add edit ssh scp download list info remove import validate filezilla tunnel dbeaver housekeeping hk install-completion version update help"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         # Complete both commands and server names
@@ -968,7 +1254,7 @@ _magneto_ssh_complete() {
     fi
 
     case "${prev}" in
-        ssh|scp|download|info|remove|add|edit|update|filezilla|fz|tunnel|dbeaver|db)
+        ssh|scp|download|info|remove|add|edit|update|filezilla|fz|tunnel|dbeaver|db|housekeeping|hk)
             local servers=""
             [[ -d "${HOME}/.magneto-ssh/servers" ]] \
                 && servers=$(ls "${HOME}/.magneto-ssh/servers" 2>/dev/null | tr '\n' ' ')
@@ -1109,6 +1395,7 @@ main() {
         filezilla|fz)           cmd_filezilla "$@" ;;
         tunnel)                 cmd_tunnel "$@" ;;
         dbeaver|db)             cmd_dbeaver "$@" ;;
+        housekeeping|hk)        cmd_housekeeping "$@" ;;
         validate|check)         cmd_validate "$@" ;;
         version|--version|-v)   cmd_version ;;
         upgrade|update|self-update) cmd_upgrade ;;
